@@ -28,13 +28,13 @@ export default function App() {
     </NavigationContainer>
 
 
-    //test image load from local file uri
+    // test image load from local file uri
     // <View>
     //   <Image
     //     source={{
-    //       uri: 'file:///data/user/0/host.exp.exponent/files/run-map-1769091930065.jpg',
+    //       uri: 'file:///data/user/0/host.exp.exponent/files/run-map-1769140052897.jpg',
     //     }}
-    //     style={{ width: '100%', height: 300 }}
+    //     style={{ width: '90%', height: '80%' }}
     //   />
     // </View>
 
