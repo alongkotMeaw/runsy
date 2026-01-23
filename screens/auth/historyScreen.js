@@ -1,12 +1,50 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 
 import BottomTab from '../components/BottomTab';
 
+/* Firebase */
+import { database } from '../../firebaseConfig';
+import { ref, onValue } from 'firebase/database';
+
+/* ---------- Utils ---------- */
+const formatTime = s => {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+};
+
+/* ---------- Screen ---------- */
 export default function HistoryScreen({ navigation, route }) {
   const { uid } = route.params;
+
+  const [runs, setRuns] = useState([]);
+
+  useEffect(() => {
+    if (!uid) return;
+
+    const runsRef = ref(database, `users/${uid}/runs`);
+    const unsub = onValue(runsRef, snapshot => {
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const list = Object.keys(data)
+          .map(key => ({ id: key, ...data[key] }))
+          .sort((a, b) => b.createdAt - a.createdAt);
+        setRuns(list);
+      } else {
+        setRuns([]);
+      }
+    });
+
+    return () => unsub();
+  }, [uid]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -20,59 +58,34 @@ export default function HistoryScreen({ navigation, route }) {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Profile Card */}
-        <View style={styles.profileCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>A</Text>
-          </View>
+        {runs.length === 0 && (
+          <Text style={styles.emptyText}>ยังไม่มีประวัติการวิ่ง</Text>
+        )}
 
-          <View style={styles.profileInfo}>
-            <Text style={styles.username}>Alongkot NOKJUN</Text>
-            <Text style={styles.subText}>Nov 23, 2024 • 9:40 AM</Text>
-
-            <View style={styles.statsRow}>
-              <Stat label="Distance" value="15.01 km" />
-              <Stat label="Pace" value="10:39 /km" />
-              <Stat label="Badges" value="🏅 8" />
-            </View>
-
-            <Text style={styles.congrats}>
-              Congrats! New PR – 15K 🎉
-            </Text>
-          </View>
-        </View>
-
-        {/* Run Cards */}
-        <RunCard title="Run" distance="8.20 km" time="52:10" pace="6:21" />
-        <RunCard title="Walk" distance="3.60 km" time="42:30" pace="11:48" />
+        {runs.map(run => (
+          <RunCard
+            key={run.id}
+            distance={`${run.distance} km`}
+            time={formatTime(run.time)}
+            pace={`${run.pace} /km`}
+            image={run.mapImage}
+          />
+        ))}
       </ScrollView>
 
       {/* Bottom Tab */}
-      <BottomTab
-      navigation={navigation}
-      uid={uid}
-      active="History"  
-      />
+      <BottomTab navigation={navigation} uid={uid} active="History" />
     </SafeAreaView>
   );
 }
 
 /* ---------- Components ---------- */
 
-function Stat({ label, value }) {
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function RunCard({ title, distance, time, pace }) {
+function RunCard({ distance, time, pace, image }) {
   return (
     <View style={styles.runCard}>
       <View style={styles.runHeader}>
-        <Text style={styles.runTitle}>{title}</Text>
+        <Text style={styles.runTitle}>Run</Text>
         <Text style={styles.runDistance}>{distance}</Text>
       </View>
 
@@ -80,29 +93,14 @@ function RunCard({ title, distance, time, pace }) {
         {time} • pace {pace}
       </Text>
 
-      {/* mock route */}
-      <View style={styles.routeMock} />
+      {image && (
+        <Image source={{ uri: image }} style={styles.routeImage} />
+      )}
     </View>
   );
 }
 
-function Tab({ icon, label, active, onPress }) {
-  return (
-    <Text
-      onPress={onPress}
-      style={[styles.tabText, active && styles.tabActive]}
-    >
-      <Ionicons
-        name={icon}
-        size={16}
-        color={active ? '#f97316' : '#6b7280'}
-      />{' '}
-      {label}
-    </Text>
-  );
-}
-
-/* ---------- Styles (Flex only) ---------- */
+/* ---------- Styles ---------- */
 
 const styles = StyleSheet.create({
   container: {
@@ -124,62 +122,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
 
-  profileCard: {
-    flexDirection: 'row',
-    backgroundColor: '#111827',
-    borderRadius: 16,
-    padding: 14,
-  },
-
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#f97316',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  avatarText: {
-    fontWeight: 'bold',
-  },
-
-  profileInfo: {
-    flex: 1,
-    gap: 4,
-  },
-
-  username: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  subText: {
+  emptyText: {
     color: '#9ca3af',
-    fontSize: 12,
-  },
-
-  statsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 6,
-  },
-  stat: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statValue: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  statLabel: {
-    color: '#9ca3af',
-    fontSize: 11,
-  },
-
-  congrats: {
-    color: '#f97316',
-    fontSize: 12,
-    marginTop: 4,
+    textAlign: 'center',
+    marginTop: 40,
   },
 
   runCard: {
@@ -205,48 +151,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
-  routeMock: {
-    height: 80,
-    borderWidth: 2,
-    borderColor: '#f97316',
-    borderRadius: 6,
+  routeImage: {
+    height: 140,
+    borderRadius: 8,
+    marginTop: 8,
   },
-
- /* ===== Bottom Tab ===== */
-tabBar: {
-  flexDirection: "row",
-  height: 80,
-  backgroundColor: "#0B0E11",
-  borderTopWidth: 1,
-  borderColor: "#1f2933",
-},
-
-tabItem: {
-  flex: 1,
-  alignItems: "center",
-  justifyContent: "center",
-},
-
-tabIconWrap: {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
-  alignItems: "center",
-  justifyContent: "center",
-},
-
-tabIconActive: {
-  backgroundColor: "rgba(249,115,22,0.15)", 
-},
-
-tabText: {
-  color: "#6b7280",
-  fontSize: 11,
-  marginTop: 4,
-},
-
-tabActive: {
-  color: "#f97316",
-  fontWeight: "bold",
-},
 });
