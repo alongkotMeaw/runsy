@@ -1,192 +1,392 @@
-import { View, Text, TextInput, Pressable, Alert, Platform } from 'react-native';
-import { ref, set, get, query, orderByChild, equalTo } from 'firebase/database';
+﻿import { useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Alert,
+  Platform,
+  StyleSheet,
+  ActivityIndicator,
+  ScrollView,
+  KeyboardAvoidingView,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState } from 'react';
+import { ref, set, get, query, orderByChild, equalTo } from 'firebase/database';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { auth, database } from '../../firebaseConfig';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+
+import { auth, database } from '../../firebaseConfig';
+import {
+  gradients,
+  palette,
+  radii,
+  shadows,
+  spacing,
+  typography,
+} from '../../theme/premiumTheme';
+
+const DEFAULT_WEEKLY_GOAL_KM = 20;
+
+const getRegisterErrorMessage = code => {
+  switch (code) {
+    case 'auth/email-already-in-use':
+      return 'This email is already in use.';
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
+    case 'auth/weak-password':
+      return 'Password should be at least 6 characters.';
+    default:
+      return 'Unable to create account right now.';
+  }
+};
 
 export default function RegisterScreen({ navigation }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
   const [gender, setGender] = useState('');
   const [weight, setWeight] = useState('');
   const [height, setHeight] = useState('');
-
   const [birthDate, setBirthDate] = useState(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  //check username has taken
-  const isUsernameTaken = async (username) => {
-   const q = query(
-     ref(database, 'users'),
-     orderByChild('username'),
-     equalTo(username)
-   );
+  const isUsernameTaken = async nextUsername => {
+    const normalized = nextUsername.toLowerCase();
 
-   const snapshot = await get(q);
-   return snapshot.exists(); 
+    const [legacySnap, normalizedSnap] = await Promise.all([
+      get(query(ref(database, 'users'), orderByChild('username'), equalTo(nextUsername))),
+      get(
+        query(
+          ref(database, 'users'),
+          orderByChild('usernameLower'),
+          equalTo(normalized)
+        )
+      ),
+    ]);
+
+    return legacySnap.exists() || normalizedSnap.exists();
   };
 
   const handleRegister = async () => {
-  if (
-    !username || !email || !password ||
-    !gender || !weight || !height || !birthDate
-  ) {
-    Alert.alert('Error', 'กรุณากรอกข้อมูลให้ครบ');
-    return;
-  }
+    if (isSubmitting) return;
 
-  try {
-    const taken = await isUsernameTaken(username);
-    if (taken) {
-      Alert.alert('Error', 'Username นี้ถูกใช้แล้ว');
+    const normalizedUsername = username.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPassword = password.trim();
+    const parsedWeight = Number(weight);
+    const parsedHeight = Number(height);
+
+    if (!normalizedUsername || !normalizedEmail || !normalizedPassword || !gender || !birthDate) {
+      Alert.alert('Missing info', 'Please complete all required fields.');
       return;
     }
 
-    const userCredential =
-      await createUserWithEmailAndPassword(auth, email, password);
+    if (!normalizedEmail.includes('@')) {
+      Alert.alert('Invalid email', 'Please enter a valid email address.');
+      return;
+    }
 
-    const user = userCredential.user;
+    if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) {
+      Alert.alert('Invalid weight', 'Please enter a valid weight in kg.');
+      return;
+    }
 
-    await set(ref(database, 'users/' + user.uid), {
-      username,
-      email: user.email,
-      gender,
-      weight: Number(weight),
-      height: Number(height),
-      birthDate: birthDate.toISOString(),
-      createdAt: Date.now(),
-    });
+    if (!Number.isFinite(parsedHeight) || parsedHeight <= 0) {
+      Alert.alert('Invalid height', 'Please enter a valid height in cm.');
+      return;
+    }
 
-    Alert.alert('Success', 'สมัครสมาชิกสำเร็จ', [
-      {
-        text: 'OK',
-        onPress: () => navigation.replace('Home')
+    if (normalizedPassword.length < 6) {
+      Alert.alert('Weak password', 'Password should be at least 6 characters.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const taken = await isUsernameTaken(normalizedUsername);
+      if (taken) {
+        Alert.alert('Username taken', 'Please choose another username.');
+        return;
       }
-    ]);
 
-  } catch (error) {
-    Alert.alert('Error', error.message);
-  }
-};
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        normalizedEmail,
+        normalizedPassword
+      );
+      const user = userCredential.user;
 
+      await set(ref(database, `users/${user.uid}`), {
+        username: normalizedUsername,
+        usernameLower: normalizedUsername.toLowerCase(),
+        email: user.email,
+        gender,
+        weight: Number(parsedWeight.toFixed(1)),
+        height: Math.round(parsedHeight),
+        birthDate: birthDate.toISOString(),
+        weeklyGoalKm: DEFAULT_WEEKLY_GOAL_KM,
+        createdAt: Date.now(),
+      });
 
-  // UI 
+      Alert.alert('Success', 'Account created successfully.');
+    } catch (error) {
+      Alert.alert('Error', getRegisterErrorMessage(error?.code));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const inputWithIcon = (icon, placeholder, value, onChangeText, options = {}) => (
+    <View style={styles.inputWrap}>
+      <Ionicons name={icon} size={18} color={palette.textMuted} />
+      <TextInput
+        placeholder={placeholder}
+        placeholderTextColor={palette.textMuted}
+        style={styles.input}
+        value={value}
+        onChangeText={onChangeText}
+        {...options}
+      />
+    </View>
+  );
+
   return (
-    
-    <SafeAreaView style={{ flex:1, padding:20 }}>
-      <Text style={styles.title}>Register</Text>
-
-      <Text>Email</Text>
-      <TextInput
-        style={styles.input}
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
+    <SafeAreaView style={styles.container}>
+      <LinearGradient
+        colors={gradients.appBackground}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
       />
 
-      <Text>Username</Text>
-      <TextInput style={styles.input} value={username} onChangeText={setUsername} />
-  
-      <Text>Password</Text>
-      <TextInput
-        style={styles.input}
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
-
-      <Text>Gender</Text>
-      <View style={styles.pickerBox}>
-        <Picker
-          selectedValue={gender}
-          onValueChange={setGender}
-        >
-          <Picker.Item label="เลือกเพศ" value="" />
-          <Picker.Item label="male" value="male" />
-          <Picker.Item label="female" value="female" />
-        </Picker>
-      </View>
-
-      <Text>Weight (kg)</Text>
-      <TextInput
-        style={styles.input}
-        value={weight}
-        onChangeText={setWeight}
-        keyboardType="numeric"
-      />
-
-      <Text>Height (cm)</Text>
-      <TextInput
-        style={styles.input}
-        value={height}
-        onChangeText={setHeight}
-        keyboardType="numeric"
-      />
-
-      <Text>Birth Date</Text>
-      <Pressable
-        style={styles.dateBtn}
-        onPress={() => setShowDatePicker(true)}
+      <KeyboardAvoidingView
+        style={styles.keyboardWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Text>
-          {birthDate
-            ? birthDate.toDateString()
-            : 'เลือกวันเกิด'}
-        </Text>
-      </Pressable>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.title}>Create Account</Text>
+          <Text style={styles.subtitle}>Set your profile once, then focus on the run.</Text>
 
-      {showDatePicker && (
-        <DateTimePicker
-          value={birthDate || new Date()}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={(event, selectedDate) => {
-            setShowDatePicker(false);
-            if (selectedDate) setBirthDate(selectedDate);
-          }}
-          maximumDate={new Date()}
-        />
-      )}
+          <View style={styles.formCard}>
+            <Text style={styles.label}>Email</Text>
+            {inputWithIcon('mail-outline', 'name@email.com', email, setEmail, {
+              autoCapitalize: 'none',
+              keyboardType: 'email-address',
+            })}
 
-      <Pressable style={styles.button} onPress={handleRegister}>
-        <Text style={{ color:'#fff' }}>Register</Text>
-      </Pressable>
+            <Text style={styles.label}>Username</Text>
+            {inputWithIcon('person-outline', 'Your username', username, setUsername, {
+              autoCapitalize: 'none',
+            })}
+
+            <Text style={styles.label}>Password</Text>
+            {inputWithIcon('lock-closed-outline', 'At least 6 characters', password, setPassword, {
+              autoCapitalize: 'none',
+              secureTextEntry: true,
+            })}
+
+            <Text style={styles.label}>Gender</Text>
+            <View style={styles.pickerBox}>
+              <Picker
+                selectedValue={gender}
+                onValueChange={setGender}
+                dropdownIconColor={palette.textSecondary}
+                style={styles.picker}
+              >
+                <Picker.Item label="Select gender" value="" />
+                <Picker.Item label="Male" value="male" />
+                <Picker.Item label="Female" value="female" />
+                <Picker.Item label="Prefer not to say" value="unspecified" />
+              </Picker>
+            </View>
+
+            <View style={styles.doubleRow}>
+              <View style={styles.doubleCol}>
+                <Text style={styles.label}>Weight (kg)</Text>
+                {inputWithIcon('barbell-outline', '65', weight, setWeight, {
+                  keyboardType: 'numeric',
+                })}
+              </View>
+
+              <View style={styles.doubleCol}>
+                <Text style={styles.label}>Height (cm)</Text>
+                {inputWithIcon('resize-outline', '170', height, setHeight, {
+                  keyboardType: 'numeric',
+                })}
+              </View>
+            </View>
+
+            <Text style={styles.label}>Birth Date</Text>
+            <Pressable style={styles.dateBtn} onPress={() => setShowDatePicker(true)}>
+              <Ionicons name="calendar-outline" size={18} color={palette.textMuted} />
+              <Text style={styles.dateText}>
+                {birthDate ? birthDate.toDateString() : 'Select date of birth'}
+              </Text>
+            </Pressable>
+
+            {showDatePicker ? (
+              <DateTimePicker
+                value={birthDate || new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, selectedDate) => {
+                  setShowDatePicker(false);
+                  if (selectedDate) {
+                    setBirthDate(selectedDate);
+                  }
+                }}
+                maximumDate={new Date()}
+              />
+            ) : null}
+
+            <Pressable
+              style={[styles.button, isSubmitting && styles.buttonDisabled]}
+              onPress={handleRegister}
+              disabled={isSubmitting}
+            >
+              <LinearGradient
+                colors={gradients.accentButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.buttonGradient}
+              >
+                {isSubmitting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.buttonText}>Register</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+
+            <Pressable onPress={() => navigation.navigate('Login')}>
+              <Text style={styles.footerLink}>Already have an account? Log in</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-const styles = {
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: palette.bgBase,
+  },
+  keyboardWrap: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 8,
+  },
   title: {
-    fontSize:24,
-    fontWeight:'bold',
-    marginBottom:20
+    ...typography.title,
+    fontSize: 30,
+  },
+  subtitle: {
+    color: palette.textSecondary,
+    marginBottom: 8,
+  },
+  formCard: {
+    backgroundColor: 'rgba(12, 20, 35, 0.86)',
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    borderRadius: radii.lg,
+    padding: 16,
+    gap: 8,
+    ...shadows.soft,
+  },
+  label: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  inputWrap: {
+    height: 48,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.24)',
+    backgroundColor: 'rgba(15, 23, 42, 0.84)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
   },
   input: {
-    borderWidth:1,
-    borderRadius:8,
-    padding:10,
-    marginBottom:12
+    flex: 1,
+    color: palette.textPrimary,
+    fontSize: 14,
   },
   pickerBox: {
-    borderWidth:1,
-    borderRadius:8,
-    marginBottom:12
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.24)',
+    borderRadius: radii.md,
+    backgroundColor: 'rgba(15, 23, 42, 0.84)',
+    overflow: 'hidden',
+  },
+  picker: {
+    color: palette.textPrimary,
+  },
+  doubleRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  doubleCol: {
+    flex: 1,
   },
   dateBtn: {
-    borderWidth:1,
-    borderRadius:8,
-    padding:12,
-    marginBottom:15
+    height: 48,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.24)',
+    borderRadius: radii.md,
+    backgroundColor: 'rgba(15, 23, 42, 0.84)',
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dateText: {
+    color: palette.textPrimary,
+    fontSize: 14,
   },
   button: {
-    backgroundColor:'#000',
-    padding:15,
-    borderRadius:8,
-    alignItems:'center'
-  }
-};
+    marginTop: 8,
+    borderRadius: radii.pill,
+    overflow: 'hidden',
+  },
+  buttonGradient: {
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonDisabled: {
+    opacity: 0.75,
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    fontSize: 16,
+  },
+  footerLink: {
+    textAlign: 'center',
+    color: '#fdba74',
+    fontWeight: '600',
+    marginTop: 6,
+    fontSize: 13,
+  },
+});

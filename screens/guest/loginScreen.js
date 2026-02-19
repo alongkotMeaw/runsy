@@ -1,102 +1,187 @@
-import { View, Text, TextInput, StyleSheet, Pressable, Alert } from 'react-native';
+﻿import { useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  StyleSheet,
+  Pressable,
+  Alert,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { ref, get, query, orderByChild, equalTo } from 'firebase/database';
+
 import { auth, database } from '../../firebaseConfig';
+import {
+  gradients,
+  palette,
+  radii,
+  shadows,
+  spacing,
+  typography,
+} from '../../theme/premiumTheme';
+
+const getLoginErrorMessage = code => {
+  switch (code) {
+    case 'auth/invalid-credential':
+      return 'Invalid email/username or password.';
+    case 'auth/user-disabled':
+      return 'This account has been disabled.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please try again later.';
+    default:
+      return 'Unable to log in right now.';
+  }
+};
 
 export default function LoginScreen({ navigation }) {
   const [showPassword, setShowPassword] = useState(false);
-  const [identifier, setIdentifier] = useState(''); 
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  
-  const getEmailFromUsername = async (username) => {
-    const q = query(
-      ref(database, 'users'),
-      orderByChild('username'),
-      equalTo(username)
-    );
+  const getEmailFromUsername = async username => {
+    const normalized = username.toLowerCase();
 
-    const snapshot = await get(q);
+    const [legacySnap, normalizedSnap] = await Promise.all([
+      get(query(ref(database, 'users'), orderByChild('username'), equalTo(username))),
+      get(
+        query(
+          ref(database, 'users'),
+          orderByChild('usernameLower'),
+          equalTo(normalized)
+        )
+      ),
+    ]);
+
+    const snapshot = normalizedSnap.exists() ? normalizedSnap : legacySnap;
     if (!snapshot.exists()) return null;
 
     const data = snapshot.val();
     const uid = Object.keys(data)[0];
-    return data[uid].email;
+    return data[uid]?.email || null;
   };
 
   const handleLogin = async () => {
-    if (!identifier || !password) {
-      Alert.alert('Error', 'กรุณากรอกข้อมูลให้ครบ');
+    if (isSubmitting) return;
+
+    const normalizedIdentifier = identifier.trim();
+    const normalizedPassword = password.trim();
+
+    if (!normalizedIdentifier || !normalizedPassword) {
+      Alert.alert('Missing info', 'Please enter your login and password.');
       return;
     }
 
-    try {
-      let emailToLogin = identifier;
+    setIsSubmitting(true);
 
-     
-      if (!identifier.includes('@')) {
-        const emailFromDB = await getEmailFromUsername(identifier);
+    try {
+      let emailToLogin = normalizedIdentifier;
+
+      if (!normalizedIdentifier.includes('@')) {
+        const emailFromDB = await getEmailFromUsername(normalizedIdentifier);
         if (!emailFromDB) {
-          Alert.alert('Error', 'ไม่พบ username นี้');
+          Alert.alert('Login failed', 'Username was not found.');
           return;
         }
         emailToLogin = emailFromDB;
       }
 
-      const userCredential = await signInWithEmailAndPassword(
-        auth,
-        emailToLogin,
-        password
-      );
-
-      const user = userCredential.user;
-
-      navigation.navigate('Dashboard', {
-        uid: user.uid,
-      });
-
+      await signInWithEmailAndPassword(auth, emailToLogin, normalizedPassword);
     } catch (error) {
-      Alert.alert('Login failed', 'Email / Username หรือ Password ไม่ถูกต้อง');
+      Alert.alert('Login failed', getLoginErrorMessage(error?.code));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>Welcome Back!</Text>
-
-      <Text style={styles.label}>Email or Username</Text>
-      <TextInput
-        placeholder="Email or Username"
-        style={styles.input}
-        autoCapitalize="none"
-        value={identifier}
-        onChangeText={setIdentifier}
+      <LinearGradient
+        colors={gradients.appBackground}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
       />
 
-      <Text style={styles.label}>Password</Text>
-      <View style={styles.passwordWrapper}>
-        <TextInput
-          placeholder="Enter your password"
-          style={styles.passwordInput}
-          secureTextEntry={!showPassword}
-          value={password}
-          onChangeText={setPassword}
-        />
-        <Pressable onPress={() => setShowPassword(!showPassword)}>
-          <Ionicons
-            name={showPassword ? 'eye-off' : 'eye'}
-            size={22}
-            color="#6b7280"
-          />
-        </Pressable>
-      </View>
+      <KeyboardAvoidingView
+        style={styles.keyboardWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <View style={styles.headerWrap}>
+            <Text style={styles.title}>Welcome Back</Text>
+            <Text style={styles.subtitle}>Sign in and continue your running journey.</Text>
+          </View>
 
-      <Pressable style={styles.loginBtn} onPress={handleLogin}>
-        <Text style={styles.loginText}>Log in</Text>
-      </Pressable>
+          <View style={styles.formCard}>
+            <Text style={styles.label}>Email or Username</Text>
+            <View style={styles.inputWrap}>
+              <Ionicons name="person-outline" size={18} color={palette.textMuted} />
+              <TextInput
+                placeholder="Email or Username"
+                placeholderTextColor={palette.textMuted}
+                style={styles.input}
+                autoCapitalize="none"
+                value={identifier}
+                onChangeText={setIdentifier}
+              />
+            </View>
+
+            <Text style={styles.label}>Password</Text>
+            <View style={styles.inputWrap}>
+              <Ionicons name="lock-closed-outline" size={18} color={palette.textMuted} />
+              <TextInput
+                placeholder="Enter your password"
+                placeholderTextColor={palette.textMuted}
+                style={styles.input}
+                secureTextEntry={!showPassword}
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
+              />
+              <Pressable onPress={() => setShowPassword(!showPassword)}>
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={palette.textMuted}
+                />
+              </Pressable>
+            </View>
+
+            <Pressable
+              style={[styles.loginBtn, isSubmitting && styles.loginBtnDisabled]}
+              onPress={handleLogin}
+              disabled={isSubmitting}
+            >
+              <LinearGradient
+                colors={gradients.accentButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.loginBtnGradient}
+              >
+                {isSubmitting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.loginText}>Log in</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+
+            <Pressable onPress={() => navigation.navigate('Register')}>
+              <Text style={styles.footerLink}>
+                New here? Create account
+              </Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -104,50 +189,85 @@ export default function LoginScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
-    padding: 24,
-    justifyContent: 'center',
+    backgroundColor: palette.bgBase,
   },
-  title: {
-    fontSize: 26,
-    fontWeight: 'bold',
-    marginBottom: 6,
-  },
-  label: {
-    fontWeight: 'bold',
-    marginBottom: 6,
-    marginTop: 16,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 48,
-  },
-  passwordWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 48,
-  },
-  passwordInput: {
+  keyboardWrap: {
     flex: 1,
   },
-  loginBtn: {
-    backgroundColor: '#3b82f6',
-    height: 50,
-    borderRadius: 25,
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingVertical: 28,
+  },
+  headerWrap: {
+    marginBottom: 16,
+  },
+  title: {
+    ...typography.title,
+    fontSize: 32,
+  },
+  subtitle: {
+    color: palette.textSecondary,
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  formCard: {
+    backgroundColor: 'rgba(12, 20, 35, 0.86)',
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    borderRadius: radii.lg,
+    padding: 16,
+    gap: 10,
+    ...shadows.soft,
+  },
+  label: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  inputWrap: {
+    height: 50,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.26)',
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 30,
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  input: {
+    flex: 1,
+    color: palette.textPrimary,
+    fontSize: 14,
+  },
+  loginBtn: {
+    marginTop: 8,
+    borderRadius: radii.pill,
+    overflow: 'hidden',
+  },
+  loginBtnGradient: {
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loginBtnDisabled: {
+    opacity: 0.75,
   },
   loginText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  footerLink: {
+    textAlign: 'center',
+    color: '#fdba74',
+    fontWeight: '600',
+    marginTop: 8,
+    fontSize: 13,
   },
 });
