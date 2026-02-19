@@ -23,6 +23,9 @@
         "projectId": "97587924-dd87-4d02-a98d-5673f260c76d"
       }
     },
-    "owner": "alono16"
+    "owner": "alono16",
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
   }
 }

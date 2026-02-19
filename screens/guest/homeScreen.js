@@ -1,96 +1,130 @@
-import { StatusBar } from 'expo-status-bar';
+﻿import { StatusBar } from 'expo-status-bar';
 import { View, Text, StyleSheet, ImageBackground, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 
-
-
+import {
+  gradients,
+  palette,
+  radii,
+  shadows,
+  spacing,
+  surfaces,
+  typography,
+} from '../../theme/premiumTheme';
 
 export default function Home({ navigation }) {
   return (
-    <SafeAreaView style={{ flex: 1 }}>
-      <View style={{ flex: 7 }}>
-          <ImageBackground
-           source={require('../../assets/Appscreen.png')}
-            style={styles.bg}
-          > </ImageBackground>
-      </View>
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="light" />
 
-      {/* interact   */}
-      <View style={{ flex: 4 }}>
-        <View style={styles.overlay} />
+      <ImageBackground
+        source={require('../../assets/Appscreen.png')}
+        style={styles.heroImage}
+        imageStyle={styles.heroImageStyle}
+      >
+        <LinearGradient
+          colors={['rgba(0,0,0,0.06)', 'rgba(2,6,23,0.84)', 'rgba(2,6,23,0.98)']}
+          style={StyleSheet.absoluteFill}
+        />
 
         <View style={styles.content}>
-          <Text style={styles.title}>RUNNING CLUB</Text>
-          <Text style={styles.subtitle}>Train together. Go further.</Text>
+          <Text style={styles.kicker}>RUNSY CLUB</Text>
+          <Text style={styles.title}>Run smarter. Track every stride.</Text>
+          <Text style={styles.subtitle}>
+            Precision route tracking, clear progress, and a premium training
+            experience.
+          </Text>
 
-          <Pressable style={styles.joinBtn}
-           onPress={() => navigation.navigate('Register')}
-          >
-            <Text style={styles.joinText}>Join Us</Text>
-          </Pressable>
+          <View style={styles.actions}>
+            <Pressable style={styles.primaryButton} onPress={() => navigation.navigate('Register')}>
+              <LinearGradient
+                colors={gradients.accentButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.primaryButtonGradient}
+              >
+                <Text style={styles.primaryButtonText}>Create Account</Text>
+              </LinearGradient>
+            </Pressable>
 
-          <Pressable style={styles.loginBtn}
-           onPress={() => navigation.navigate('Login')}
-          >
-            <Text style={styles.loginText}>Log in</Text>
-          </Pressable>
+            <Pressable style={styles.secondaryButton} onPress={() => navigation.navigate('Login')}>
+              <Text style={styles.secondaryButtonText}>I already have an account</Text>
+            </Pressable>
+          </View>
         </View>
-
-        <StatusBar style="light" />
-      </View>
-     
+      </ImageBackground>
     </SafeAreaView>
   );
 }
 
-
 const styles = StyleSheet.create({
-  bg: {
+  container: {
+    flex: 1,
+    backgroundColor: palette.bgBase,
+  },
+  heroImage: {
     flex: 1,
     justifyContent: 'flex-end',
   },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+  heroImageStyle: {
+    resizeMode: 'cover',
   },
   content: {
-    padding: 24,
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingBottom: 42,
+    gap: 10,
+  },
+  kicker: {
+    color: '#fde68a',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.4,
   },
   title: {
-    color: '#fff',
-    fontSize: 26,
-    fontWeight: 'bold',
-    marginBottom: 8,
+    ...typography.title,
+    fontSize: 34,
+    lineHeight: 40,
+    maxWidth: '92%',
   },
   subtitle: {
-    color: '#d1d5db',
-    fontSize: 14,
-    marginBottom: 24,
+    color: palette.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    maxWidth: '95%',
   },
-  joinBtn: {
-    backgroundColor: '#f97316',
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
+  actions: {
+    marginTop: 14,
+    gap: 12,
+  },
+  primaryButton: {
+    borderRadius: radii.pill,
+    overflow: 'hidden',
+    ...shadows.soft,
+  },
+  primaryButtonGradient: {
+    height: 56,
     alignItems: 'center',
-    marginBottom: 12,
-  },
-  joinText: {
-    color: '#000',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  loginBtn: {
-    height: 50,
-    borderRadius: 25,
-    borderWidth: 1.5,
-    borderColor: '#f97316',
     justifyContent: 'center',
-    alignItems: 'center',
   },
-  loginText: {
-    color: '#f97316',
+  primaryButtonText: {
+    color: '#fff',
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  secondaryButton: {
+    height: 56,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: surfaces.card.backgroundColor,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    color: palette.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
