@@ -7,12 +7,13 @@ import {
   ActivityIndicator,
   ScrollView,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { signOut } from 'firebase/auth';
-import { get, ref } from 'firebase/database';
+import { get, ref, update } from 'firebase/database';
 
 import BottomTab from '../components/BottomTab';
 import { auth, database } from '../../firebaseConfig';
@@ -50,6 +51,20 @@ const formatDateLabel = timestamp => {
   return new Date(value).toLocaleDateString();
 };
 
+const DEFAULT_WEEKLY_GOAL_KM = 20;
+
+const buildDraftProfile = source => {
+  const weight = toNumber(source?.weight);
+  const height = toNumber(source?.height);
+  const weeklyGoalKm = toNumber(source?.weeklyGoalKm) || DEFAULT_WEEKLY_GOAL_KM;
+
+  return {
+    weight: weight > 0 ? String(weight) : '',
+    height: height > 0 ? String(height) : '',
+    weeklyGoalKm: weeklyGoalKm > 0 ? String(weeklyGoalKm) : String(DEFAULT_WEEKLY_GOAL_KM),
+  };
+};
+
 const bestSplit = (runs, targetKm) => {
   let bestSeconds = Infinity;
 
@@ -85,6 +100,9 @@ export default function ProfileScreen({ navigation, route }) {
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState('');
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [draftProfile, setDraftProfile] = useState(() => buildDraftProfile(null));
 
   const loadProfile = useCallback(async () => {
     if (!uid) {
@@ -116,6 +134,8 @@ export default function ProfileScreen({ navigation, route }) {
       ].filter(Boolean).length;
 
       setProfile(userData);
+      setDraftProfile(buildDraftProfile(userData));
+      setIsEditing(false);
       setTotals({
         runs: totalRuns,
         distance: Number(totalDistance.toFixed(2)),
@@ -146,6 +166,63 @@ export default function ProfileScreen({ navigation, route }) {
   }, [profile?.username, profile?.email]);
 
   const memberSinceText = useMemo(() => formatDateLabel(profile?.createdAt), [profile?.createdAt]);
+
+  const handleDraftChange = (field, value) => {
+    setDraftProfile(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleStartEdit = () => {
+    setDraftProfile(buildDraftProfile(profile));
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setDraftProfile(buildDraftProfile(profile));
+    setIsEditing(false);
+  };
+
+  const handleSaveProfile = async () => {
+    if (isSavingProfile || !uid) return;
+
+    const weightValue = Number(draftProfile.weight);
+    const heightValue = Number(draftProfile.height);
+    const weeklyGoalValue = Number(draftProfile.weeklyGoalKm);
+
+    if (!Number.isFinite(weightValue) || weightValue <= 0) {
+      Alert.alert('Invalid weight', 'Please enter a valid weight in kg.');
+      return;
+    }
+
+    if (!Number.isFinite(heightValue) || heightValue <= 0) {
+      Alert.alert('Invalid height', 'Please enter a valid height in cm.');
+      return;
+    }
+
+    if (!Number.isFinite(weeklyGoalValue) || weeklyGoalValue < 1 || weeklyGoalValue > 300) {
+      Alert.alert('Invalid goal', 'Weekly goal should be between 1 and 300 km.');
+      return;
+    }
+
+    const payload = {
+      weight: Number(weightValue.toFixed(1)),
+      height: Math.round(heightValue),
+      weeklyGoalKm: Number(weeklyGoalValue.toFixed(1)),
+      updatedAt: Date.now(),
+    };
+
+    setIsSavingProfile(true);
+    try {
+      await update(ref(database, `users/${uid}`), payload);
+      setProfile(prev => ({ ...(prev || {}), ...payload }));
+      setDraftProfile(buildDraftProfile({ ...(profile || {}), ...payload }));
+      setIsEditing(false);
+      Alert.alert('Saved', 'Profile updated successfully.');
+    } catch (error) {
+      Alert.alert('Error', 'Unable to update profile right now.');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
 
   const handleLogout = async () => {
     if (isLoggingOut) return;
@@ -203,10 +280,71 @@ export default function ProfileScreen({ navigation, route }) {
             <RecordRow label="10K Best" value={records.tenK} />
             <RecordRow label="Half Marathon Best" value={records.half} />
 
-            <Text style={styles.sectionTitle}>Account</Text>
+            <View style={styles.accountHeader}>
+              <Text style={[styles.sectionTitle, styles.accountHeaderTitle]}>Account</Text>
+              {isEditing ? (
+                <View style={styles.accountActions}>
+                  <Pressable
+                    style={styles.actionButtonGhost}
+                    onPress={handleCancelEdit}
+                    disabled={isSavingProfile}
+                  >
+                    <Text style={styles.actionButtonGhostText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.actionButtonPrimary, isSavingProfile && styles.actionButtonDisabled]}
+                    onPress={handleSaveProfile}
+                    disabled={isSavingProfile}
+                  >
+                    <Text style={styles.actionButtonPrimaryText}>
+                      {isSavingProfile ? 'Saving...' : 'Save'}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable style={styles.actionButtonGhost} onPress={handleStartEdit}>
+                  <Text style={styles.actionButtonGhostText}>Edit</Text>
+                </Pressable>
+              )}
+            </View>
             <KeyValueRow label="Gender" value={profile?.gender || '-'} />
-            <KeyValueRow label="Weight" value={profile?.weight ? `${profile.weight} kg` : '-'} />
-            <KeyValueRow label="Height" value={profile?.height ? `${profile.height} cm` : '-'} />
+            {isEditing ? (
+              <>
+                <EditableValueRow
+                  label="Weight"
+                  value={draftProfile.weight}
+                  onChangeText={text => handleDraftChange('weight', text)}
+                  placeholder="65"
+                  keyboardType="decimal-pad"
+                  suffix="kg"
+                />
+                <EditableValueRow
+                  label="Height"
+                  value={draftProfile.height}
+                  onChangeText={text => handleDraftChange('height', text)}
+                  placeholder="170"
+                  keyboardType="number-pad"
+                  suffix="cm"
+                />
+                <EditableValueRow
+                  label="Weekly Goal"
+                  value={draftProfile.weeklyGoalKm}
+                  onChangeText={text => handleDraftChange('weeklyGoalKm', text)}
+                  placeholder="20"
+                  keyboardType="decimal-pad"
+                  suffix="km"
+                />
+              </>
+            ) : (
+              <>
+                <KeyValueRow label="Weight" value={profile?.weight ? `${profile.weight} kg` : '-'} />
+                <KeyValueRow label="Height" value={profile?.height ? `${profile.height} cm` : '-'} />
+                <KeyValueRow
+                  label="Weekly Goal"
+                  value={profile?.weeklyGoalKm ? `${profile.weeklyGoalKm} km` : '-'}
+                />
+              </>
+            )}
             <KeyValueRow
               label="Birth Date"
               value={profile?.birthDate ? new Date(profile.birthDate).toLocaleDateString() : '-'}
@@ -259,6 +397,25 @@ function KeyValueRow({ label, value }) {
     <View style={styles.settingItem}>
       <Text style={styles.settingLabel}>{label}</Text>
       <Text style={styles.settingText}>{value}</Text>
+    </View>
+  );
+}
+
+function EditableValueRow({ label, value, onChangeText, placeholder, keyboardType, suffix }) {
+  return (
+    <View style={styles.settingItem}>
+      <Text style={styles.settingLabel}>{label}</Text>
+      <View style={styles.editableInputWrap}>
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={palette.textMuted}
+          keyboardType={keyboardType}
+          style={styles.editableInput}
+        />
+        <Text style={styles.editableSuffix}>{suffix}</Text>
+      </View>
     </View>
   );
 }
@@ -346,6 +503,48 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 4,
   },
+  accountHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  accountHeaderTitle: {
+    marginTop: 0,
+    marginBottom: 0,
+  },
+  accountActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  actionButtonGhost: {
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(148,163,184,0.14)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  actionButtonGhostText: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  actionButtonPrimary: {
+    borderRadius: radii.pill,
+    backgroundColor: palette.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  actionButtonPrimaryText: {
+    color: '#0f172a',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  actionButtonDisabled: {
+    opacity: 0.7,
+  },
   recordItem: {
     ...surfaces.card,
     borderRadius: radii.md,
@@ -383,6 +582,31 @@ const styles = StyleSheet.create({
   settingText: {
     color: palette.textPrimary,
     fontSize: 12,
+    fontWeight: '700',
+  },
+  editableInputWrap: {
+    minWidth: 120,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(15,23,42,0.58)',
+    paddingHorizontal: 10,
+    paddingVertical: 0,
+  },
+  editableInput: {
+    minWidth: 56,
+    color: palette.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+    paddingVertical: 8,
+    textAlign: 'right',
+  },
+  editableSuffix: {
+    marginLeft: 6,
+    color: palette.textMuted,
+    fontSize: 11,
     fontWeight: '700',
   },
   logoutButton: {

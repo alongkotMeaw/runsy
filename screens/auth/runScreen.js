@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Pedometer } from 'expo-sensors';
@@ -85,6 +85,10 @@ const MIN_SAVE_SECONDS = 15;
 const MIN_SAVE_DISTANCE_KM = 0.05;
 const MAX_SEGMENT_KM = 0.3;
 const MIN_SEGMENT_KM = 0.003;
+const MAX_LOCATION_ACCURACY_M = 30;
+const TARGET_INITIAL_ACCURACY_M = 20;
+const INITIAL_FIX_ATTEMPTS = 4;
+const MAX_PLAUSIBLE_RUNNING_SPEED_KMH = 35;
 const SNAP_PADDING = { top: 48, right: 48, bottom: 48, left: 48 };
 const DEFAULT_WEIGHT_KG = 65;
 const KCAL_PER_KM_PER_KG = 1.036;
@@ -114,6 +118,8 @@ export default function RunScreen({ navigation, route }) {
   const runStartedAtRef = useRef(null);
   const runStartedTimestampRef = useRef(null);
   const lastAltitudeRef = useRef(null);
+  const lastAcceptedPointRef = useRef(null);
+  const lastAcceptedTimestampRef = useRef(null);
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
 
@@ -163,6 +169,8 @@ export default function RunScreen({ navigation, route }) {
     runStartedAtRef.current = null;
     runStartedTimestampRef.current = null;
     lastAltitudeRef.current = null;
+    lastAcceptedPointRef.current = null;
+    lastAcceptedTimestampRef.current = null;
   };
 
   useEffect(() => {
@@ -283,6 +291,57 @@ export default function RunScreen({ navigation, route }) {
     }
   };
 
+  const getAccuracyMeters = coords => {
+    const raw = Number(coords?.accuracy);
+    return Number.isFinite(raw) ? raw : null;
+  };
+
+  const enableHighAccuracyProviderIfAvailable = async Location => {
+    if (Platform.OS !== 'android' || typeof Location.enableNetworkProviderAsync !== 'function') {
+      return;
+    }
+
+    try {
+      await Location.enableNetworkProviderAsync();
+    } catch (error) {
+      // User can decline the system dialog; tracking still starts with current provider settings.
+    }
+  };
+
+  const getBestInitialFix = async Location => {
+    let best = null;
+
+    for (let attempt = 0; attempt < INITIAL_FIX_ATTEMPTS; attempt += 1) {
+      try {
+        const candidate = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+          maximumAge: 0,
+          timeout: 12000,
+          mayShowUserSettingsDialog: true,
+        });
+
+        const candidateAccuracy = getAccuracyMeters(candidate.coords);
+        const bestAccuracy = best ? getAccuracyMeters(best.coords) : null;
+
+        if (
+          !best ||
+          (candidateAccuracy !== null &&
+            (bestAccuracy === null || candidateAccuracy < bestAccuracy))
+        ) {
+          best = candidate;
+        }
+
+        if (candidateAccuracy !== null && candidateAccuracy <= TARGET_INITIAL_ACCURACY_M) {
+          break;
+        }
+      } catch (error) {
+        // Keep trying; some devices need multiple attempts for first GPS lock.
+      }
+    }
+
+    return best;
+  };
+
   const startStepTracking = async () => {
     setStepCount(0);
 
@@ -339,6 +398,15 @@ export default function RunScreen({ navigation, route }) {
     }
 
     try {
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled) {
+        Alert.alert('Location required', 'Please enable location services (GPS)');
+        setIsBusy(false);
+        return;
+      }
+
+      await enableHighAccuracyProviderIfAvailable(Location);
+
       resetRunState();
       runStartedAtRef.current = Date.now();
       runStartedTimestampRef.current = Date.now();
@@ -346,9 +414,15 @@ export default function RunScreen({ navigation, route }) {
       await startStepTracking();
 
       try {
-        const current = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Highest,
-        });
+        const current = await getBestInitialFix(Location);
+        if (!current) {
+          throw new Error('No initial GPS fix');
+        }
+
+        const initialAccuracy = getAccuracyMeters(current.coords);
+        if (initialAccuracy !== null && initialAccuracy > MAX_LOCATION_ACCURACY_M) {
+          throw new Error('Initial accuracy is too low');
+        }
 
         const initialPoint = {
           latitude: current.coords.latitude,
@@ -357,6 +431,11 @@ export default function RunScreen({ navigation, route }) {
 
         setLocation(initialPoint);
         setCoords([initialPoint]);
+        const initialTimestamp = Number(current.timestamp);
+        lastAcceptedPointRef.current = initialPoint;
+        lastAcceptedTimestampRef.current = Number.isFinite(initialTimestamp)
+          ? initialTimestamp
+          : Date.now();
         focusMapOnPoint(initialPoint, 650);
 
         const speedMs = Number(current.coords.speed);
@@ -376,15 +455,63 @@ export default function RunScreen({ navigation, route }) {
 
       watcherRef.current = await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.High,
+          accuracy: Location.Accuracy.BestForNavigation,
           timeInterval: 1000,
-          distanceInterval: 3,
+          distanceInterval: 1,
+          mayShowUserSettingsDialog: true,
         },
         loc => {
+          const latitude = Number(loc.coords.latitude);
+          const longitude = Number(loc.coords.longitude);
+          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+            return;
+          }
+
+          const signalAccuracy = getAccuracyMeters(loc.coords);
+          if (signalAccuracy !== null && signalAccuracy > MAX_LOCATION_ACCURACY_M) {
+            return;
+          }
+
           const point = {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
+            latitude,
+            longitude,
           };
+
+          const rawTimestamp = Number(loc.timestamp);
+          const pointTimestamp = Number.isFinite(rawTimestamp) ? rawTimestamp : Date.now();
+          const lastPoint = lastAcceptedPointRef.current;
+
+          if (!lastPoint) {
+            setCoords([point]);
+            lastAcceptedPointRef.current = point;
+            lastAcceptedTimestampRef.current = pointTimestamp;
+          } else {
+            const segment = distanceKmBetween(lastPoint, point);
+            if (segment > MAX_SEGMENT_KM) {
+              return;
+            }
+
+            if (segment >= MIN_SEGMENT_KM) {
+              const previousAcceptedPoint = lastPoint;
+              const lastTimestamp = lastAcceptedTimestampRef.current;
+              if (Number.isFinite(lastTimestamp) && pointTimestamp > lastTimestamp) {
+                const elapsedHours = (pointTimestamp - lastTimestamp) / 3600000;
+                const inferredSpeedKmh = elapsedHours > 0 ? segment / elapsedHours : 0;
+                if (inferredSpeedKmh > MAX_PLAUSIBLE_RUNNING_SPEED_KMH) {
+                  return;
+                }
+              }
+
+              setDistance(previousDistance => previousDistance + segment);
+              setCoords(prev =>
+                prev.length === 0 && previousAcceptedPoint
+                  ? [previousAcceptedPoint, point]
+                  : [...prev, point]
+              );
+              lastAcceptedPointRef.current = point;
+              lastAcceptedTimestampRef.current = pointTimestamp;
+            }
+          }
 
           setLocation(point);
 
@@ -405,25 +532,6 @@ export default function RunScreen({ navigation, route }) {
             }
             lastAltitudeRef.current = altitude;
           }
-
-          setCoords(prev => {
-            if (prev.length === 0) {
-              return [point];
-            }
-
-            const segment = distanceKmBetween(prev[prev.length - 1], point);
-
-            if (segment < MIN_SEGMENT_KM) {
-              return prev;
-            }
-
-            if (segment > MAX_SEGMENT_KM) {
-              return prev;
-            }
-
-            setDistance(previousDistance => previousDistance + segment);
-            return [...prev, point];
-          });
         }
       );
 
