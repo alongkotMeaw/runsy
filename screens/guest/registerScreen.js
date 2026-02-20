@@ -31,7 +31,14 @@ import {
 
 const DEFAULT_WEEKLY_GOAL_KM = 20;
 
-const getRegisterErrorMessage = code => {
+const isPermissionDeniedError = error => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code.includes('PERMISSION_DENIED') || message.includes('permission denied');
+};
+
+const getRegisterErrorMessage = error => {
+  const code = error?.code;
   switch (code) {
     case 'auth/email-already-in-use':
       return 'This email is already in use.';
@@ -39,7 +46,18 @@ const getRegisterErrorMessage = code => {
       return 'Please enter a valid email address.';
     case 'auth/weak-password':
       return 'Password should be at least 6 characters.';
+    case 'auth/network-request-failed':
+      return 'Network error. Please check your connection and try again.';
+    case 'auth/operation-not-allowed':
+      return 'Email/Password sign-up is disabled in Firebase Authentication.';
+    case 'auth/invalid-api-key':
+      return 'Firebase API key is invalid. Please check app configuration.';
+    case 'PERMISSION_DENIED':
+      return 'Database permission denied. Please check Firebase Realtime Database rules.';
     default:
+      if (isPermissionDeniedError(error)) {
+        return 'Database permission denied. Please check Firebase Realtime Database rules.';
+      }
       return 'Unable to create account right now.';
   }
 };
@@ -58,18 +76,26 @@ export default function RegisterScreen({ navigation }) {
   const isUsernameTaken = async nextUsername => {
     const normalized = nextUsername.toLowerCase();
 
-    const [legacySnap, normalizedSnap] = await Promise.all([
-      get(query(ref(database, 'users'), orderByChild('username'), equalTo(nextUsername))),
-      get(
-        query(
-          ref(database, 'users'),
-          orderByChild('usernameLower'),
-          equalTo(normalized)
-        )
-      ),
-    ]);
+    try {
+      const [legacySnap, normalizedSnap] = await Promise.all([
+        get(query(ref(database, 'users'), orderByChild('username'), equalTo(nextUsername))),
+        get(
+          query(
+            ref(database, 'users'),
+            orderByChild('usernameLower'),
+            equalTo(normalized)
+          )
+        ),
+      ]);
 
-    return legacySnap.exists() || normalizedSnap.exists();
+      return legacySnap.exists() || normalizedSnap.exists();
+    } catch (error) {
+      if (isPermissionDeniedError(error)) {
+        // Some databases block global user reads for unauthenticated signup.
+        return false;
+      }
+      throw error;
+    }
   };
 
   const handleRegister = async () => {
@@ -136,7 +162,7 @@ export default function RegisterScreen({ navigation }) {
 
       Alert.alert('Success', 'Account created successfully.');
     } catch (error) {
-      Alert.alert('Error', getRegisterErrorMessage(error?.code));
+      Alert.alert('Error', getRegisterErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
