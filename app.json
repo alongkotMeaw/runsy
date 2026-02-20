@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "runsy",
+    "slug": "runsy",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.alono16.runsy"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "97587924-dd87-4d02-a98d-5673f260c76d"
+      }
+    },
+    "owner": "alono16",
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
+  }
+}
