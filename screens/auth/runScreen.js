@@ -83,6 +83,7 @@ const MAP_ENABLED = Boolean(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY);
 
 const MIN_SAVE_SECONDS = 15;
 const MIN_SAVE_DISTANCE_KM = 0.05;
+const MIN_LIVE_PACE_DISTANCE_KM = 0.05;
 const MAX_SEGMENT_KM = 0.3;
 const MIN_SEGMENT_KM = 0.003;
 const SNAP_PADDING = { top: 48, right: 48, bottom: 48, left: 48 };
@@ -470,9 +471,10 @@ export default function RunScreen({ navigation, route }) {
     stopStepTracking();
 
     const runSeconds = stopTimer();
-    const normalizedDistance = Number(distance.toFixed(2));
+    const distanceKm = Number(distance);
+    const roundedDistanceKm = Number(distanceKm.toFixed(3));
 
-    if (runSeconds < MIN_SAVE_SECONDS || normalizedDistance < MIN_SAVE_DISTANCE_KM) {
+    if (runSeconds < MIN_SAVE_SECONDS || distanceKm < MIN_SAVE_DISTANCE_KM) {
       Alert.alert(
         'Run not saved',
         `Run must be at least ${MIN_SAVE_SECONDS} seconds and ${MIN_SAVE_DISTANCE_KM} km.`
@@ -492,13 +494,13 @@ export default function RunScreen({ navigation, route }) {
       }
 
       const mapImage = await captureMapSnapshot();
-      const snapshotSteps = usingSensorSteps ? stepCount : estimateSteps(normalizedDistance);
-      const snapshotAvgSpeed = normalizedDistance / (runSeconds / 3600);
+      const snapshotSteps = usingSensorSteps ? stepCount : estimateSteps(distanceKm);
+      const snapshotAvgSpeed = distanceKm / (runSeconds / 3600);
 
       const runData = {
         time: runSeconds,
-        distance: normalizedDistance,
-        pace: formatPace(runSeconds, normalizedDistance),
+        distance: roundedDistanceKm,
+        pace: formatPace(runSeconds, distanceKm),
         route: coords,
         mapImage,
         steps: snapshotSteps,
@@ -523,7 +525,10 @@ export default function RunScreen({ navigation, route }) {
     }
   };
 
-  const pace = formatPace(seconds, distance);
+  const pace =
+    distance >= MIN_LIVE_PACE_DISTANCE_KM
+      ? formatPace(seconds, distance)
+      : '--';
   const statusText = isBusy
     ? 'Preparing session...'
     : isRunning
