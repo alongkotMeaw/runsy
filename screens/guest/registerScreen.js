@@ -13,13 +13,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ref, set, get, query, orderByChild, equalTo } from 'firebase/database';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { createUserWithEmailAndPassword, deleteUser } from 'firebase/auth';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
-import { auth, database } from '../../firebaseConfig';
+import { auth, database, firebaseSetup } from '../../firebaseConfig';
 import {
   gradients,
   palette,
@@ -31,14 +31,12 @@ import {
 
 const DEFAULT_WEEKLY_GOAL_KM = 20;
 
-const isPermissionDeniedError = error => {
-  const code = String(error?.code || '').toUpperCase();
-  const message = String(error?.message || '').toLowerCase();
-  return code.includes('PERMISSION_DENIED') || message.includes('permission denied');
-};
+const isPermissionDeniedError = error =>
+  error?.code === 'PERMISSION_DENIED' || error?.code === 'auth/permission-denied';
 
 const getRegisterErrorMessage = error => {
   const code = error?.code;
+
   switch (code) {
     case 'auth/email-already-in-use':
       return 'This email is already in use.';
@@ -47,19 +45,26 @@ const getRegisterErrorMessage = error => {
     case 'auth/weak-password':
       return 'Password should be at least 6 characters.';
     case 'auth/network-request-failed':
-      return 'Network error. Please check your connection and try again.';
+      return 'Network error. Check your internet connection.';
     case 'auth/operation-not-allowed':
-      return 'Email/Password sign-up is disabled in Firebase Authentication.';
+      return 'Email/Password sign-in is disabled in Firebase Authentication.';
+    case 'auth/missing-api-key':
     case 'auth/invalid-api-key':
-      return 'Firebase API key is invalid. Please check app configuration.';
+    case 'auth/configuration-not-found':
+      return 'Firebase config is missing or invalid in this build.';
     case 'PERMISSION_DENIED':
-      return 'Database permission denied. Please check Firebase Realtime Database rules.';
+      return 'Database rules blocked this request. Check Realtime Database rules.';
     default:
-      if (isPermissionDeniedError(error)) {
-        return 'Database permission denied. Please check Firebase Realtime Database rules.';
-      }
-      return 'Unable to create account right now.';
+      return code
+        ? `Unable to create account right now (${code}).`
+        : 'Unable to create account right now.';
   }
+};
+
+const getErrorDetails = error => {
+  const code = error?.code || 'unknown';
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return message ? `\n\nCode: ${code}\nDetail: ${message}` : `\n\nCode: ${code}`;
 };
 
 export default function RegisterScreen({ navigation }) {
@@ -76,30 +81,30 @@ export default function RegisterScreen({ navigation }) {
   const isUsernameTaken = async nextUsername => {
     const normalized = nextUsername.toLowerCase();
 
-    try {
-      const [legacySnap, normalizedSnap] = await Promise.all([
-        get(query(ref(database, 'users'), orderByChild('username'), equalTo(nextUsername))),
-        get(
-          query(
-            ref(database, 'users'),
-            orderByChild('usernameLower'),
-            equalTo(normalized)
-          )
-        ),
-      ]);
+    const [legacySnap, normalizedSnap] = await Promise.all([
+      get(query(ref(database, 'users'), orderByChild('username'), equalTo(nextUsername))),
+      get(
+        query(
+          ref(database, 'users'),
+          orderByChild('usernameLower'),
+          equalTo(normalized)
+        )
+      ),
+    ]);
 
-      return legacySnap.exists() || normalizedSnap.exists();
-    } catch (error) {
-      if (isPermissionDeniedError(error)) {
-        // Some databases block global user reads for unauthenticated signup.
-        return false;
-      }
-      throw error;
-    }
+    return legacySnap.exists() || normalizedSnap.exists();
   };
 
   const handleRegister = async () => {
     if (isSubmitting) return;
+
+    if (!firebaseSetup.isConfigured) {
+      Alert.alert(
+        'Firebase config missing',
+        `Missing env vars: ${firebaseSetup.missingEnvVars.join(', ')}`
+      );
+      return;
+    }
 
     const normalizedUsername = username.trim();
     const normalizedEmail = email.trim().toLowerCase();
@@ -134,11 +139,21 @@ export default function RegisterScreen({ navigation }) {
 
     setIsSubmitting(true);
 
+    let createdUser = null;
+    let retryUsernameCheckAfterAuth = false;
+
     try {
-      const taken = await isUsernameTaken(normalizedUsername);
-      if (taken) {
-        Alert.alert('Username taken', 'Please choose another username.');
-        return;
+      try {
+        const taken = await isUsernameTaken(normalizedUsername);
+        if (taken) {
+          Alert.alert('Username taken', 'Please choose another username.');
+          return;
+        }
+      } catch (usernameError) {
+        if (!isPermissionDeniedError(usernameError)) {
+          throw usernameError;
+        }
+        retryUsernameCheckAfterAuth = true;
       }
 
       const userCredential = await createUserWithEmailAndPassword(
@@ -146,12 +161,27 @@ export default function RegisterScreen({ navigation }) {
         normalizedEmail,
         normalizedPassword
       );
-      const user = userCredential.user;
+      createdUser = userCredential.user;
 
-      await set(ref(database, `users/${user.uid}`), {
+      if (retryUsernameCheckAfterAuth) {
+        try {
+          const takenAfterAuth = await isUsernameTaken(normalizedUsername);
+          if (takenAfterAuth) {
+            await deleteUser(createdUser);
+            Alert.alert('Username taken', 'Please choose another username.');
+            return;
+          }
+        } catch (usernameErrorAfterAuth) {
+          if (!isPermissionDeniedError(usernameErrorAfterAuth)) {
+            throw usernameErrorAfterAuth;
+          }
+        }
+      }
+
+      await set(ref(database, `users/${createdUser.uid}`), {
         username: normalizedUsername,
         usernameLower: normalizedUsername.toLowerCase(),
-        email: user.email,
+        email: createdUser.email,
         gender,
         weight: Number(parsedWeight.toFixed(1)),
         height: Math.round(parsedHeight),
@@ -162,7 +192,16 @@ export default function RegisterScreen({ navigation }) {
 
       Alert.alert('Success', 'Account created successfully.');
     } catch (error) {
-      Alert.alert('Error', getRegisterErrorMessage(error));
+      if (createdUser && isPermissionDeniedError(error)) {
+        try {
+          await deleteUser(createdUser);
+        } catch {
+          // Keep the main error visible; rollback can fail on weak networks.
+        }
+      }
+
+      console.error('[RegisterScreen] Register failed', error);
+      Alert.alert('Error', `${getRegisterErrorMessage(error)}${getErrorDetails(error)}`);
     } finally {
       setIsSubmitting(false);
     }

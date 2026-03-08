@@ -25,6 +25,31 @@ const firebaseConfig = {
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
+const envKeyMap = {
+  apiKey: 'EXPO_PUBLIC_FIREBASE_API_KEY',
+  authDomain: 'EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN',
+  databaseURL: 'EXPO_PUBLIC_FIREBASE_DATABASE_URL',
+  projectId: 'EXPO_PUBLIC_FIREBASE_PROJECT_ID',
+  storageBucket: 'EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET',
+  messagingSenderId: 'EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID',
+  appId: 'EXPO_PUBLIC_FIREBASE_APP_ID',
+};
+
+const missingEnvVars = Object.entries(envKeyMap)
+  .filter(([configKey]) => {
+    const value = firebaseConfig[configKey];
+    return typeof value !== 'string' || value.trim().length === 0;
+  })
+  .map(([, envName]) => envName);
+
+export const firebaseSetup = {
+  isConfigured: missingEnvVars.length === 0,
+  missingEnvVars,
+};
+
+if (!firebaseSetup.isConfigured) {
+  console.warn(`[Firebase] Missing env vars: ${missingEnvVars.join(', ')}`);
+}
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 

@@ -1,8 +1,18 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Alert, Platform } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Alert,
+  Platform,
+  Animated,
+  Easing,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Pedometer } from 'expo-sensors';
+import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import BottomTab from '../components/BottomTab';
@@ -10,6 +20,13 @@ import BottomTab from '../components/BottomTab';
 /* Firebase */
 import { auth, database } from '../../firebaseConfig';
 import { ref, push, set, get } from 'firebase/database';
+import {
+  clearRunTrackingSession,
+  getRunTrackingSession,
+  requestRunTrackingPermissions,
+  startRunTracking,
+  stopRunTracking,
+} from '../../services/runTrackingService';
 import {
   gradients,
   palette,
@@ -20,20 +37,9 @@ import {
 } from '../../theme/premiumTheme';
 
 /* ---------- Utils ---------- */
-const toRad = value => (value * Math.PI) / 180;
-
-const distanceKmBetween = (a, b) => {
-  const R = 6371;
-  const dLat = toRad(b.latitude - a.latitude);
-  const dLon = toRad(b.longitude - a.longitude);
-  const lat1 = toRad(a.latitude);
-  const lat2 = toRad(b.latitude);
-
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-
-  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 const formatClock = totalSeconds => {
@@ -83,15 +89,11 @@ const MAP_ENABLED = Boolean(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY);
 
 const MIN_SAVE_SECONDS = 15;
 const MIN_SAVE_DISTANCE_KM = 0.05;
-const MAX_SEGMENT_KM = 0.3;
-const MIN_SEGMENT_KM = 0.003;
-const MAX_LOCATION_ACCURACY_M = 30;
-const TARGET_INITIAL_ACCURACY_M = 20;
-const INITIAL_FIX_ATTEMPTS = 4;
-const MAX_PLAUSIBLE_RUNNING_SPEED_KMH = 35;
+const MIN_LIVE_PACE_DISTANCE_KM = 0.05;
 const SNAP_PADDING = { top: 48, right: 48, bottom: 48, left: 48 };
 const DEFAULT_WEIGHT_KG = 65;
 const KCAL_PER_KM_PER_KG = 1.036;
+const SESSION_SYNC_MS = 1100;
 
 /* ---------- Screen ---------- */
 export default function RunScreen({ navigation, route }) {
@@ -113,15 +115,13 @@ export default function RunScreen({ navigation, route }) {
   const [userWeightKg, setUserWeightKg] = useState(DEFAULT_WEIGHT_KG);
 
   const timerRef = useRef(null);
-  const watcherRef = useRef(null);
+  const syncRef = useRef(null);
   const pedometerSubRef = useRef(null);
   const runStartedAtRef = useRef(null);
   const runStartedTimestampRef = useRef(null);
-  const lastAltitudeRef = useRef(null);
-  const lastAcceptedPointRef = useRef(null);
-  const lastAcceptedTimestampRef = useRef(null);
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
+  const pulseAnim = useRef(new Animated.Value(0)).current;
 
   let mapModule = null;
   if (MAP_ENABLED) {
@@ -147,11 +147,7 @@ export default function RunScreen({ navigation, route }) {
   const displaySpeedKmh = instantSpeedKmh > 0 ? instantSpeedKmh : avgSpeedKmh;
   const cadenceSpm = seconds > 0 ? Math.round((totalSteps / seconds) * 60) : 0;
   const calories = Math.max(0, Math.round(distance * userWeightKg * KCAL_PER_KM_PER_KG));
-
-  const stopLocationTracking = () => {
-    watcherRef.current?.remove();
-    watcherRef.current = null;
-  };
+  const isLiveMode = isRunning && !isBusy;
 
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
@@ -168,9 +164,6 @@ export default function RunScreen({ navigation, route }) {
     setElevationGainM(0);
     runStartedAtRef.current = null;
     runStartedTimestampRef.current = null;
-    lastAltitudeRef.current = null;
-    lastAcceptedPointRef.current = null;
-    lastAcceptedTimestampRef.current = null;
   };
 
   useEffect(() => {
@@ -201,14 +194,47 @@ export default function RunScreen({ navigation, route }) {
 
   useEffect(() => {
     return () => {
-      stopLocationTracking();
       stopStepTracking();
+
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+
+      if (syncRef.current) {
+        clearInterval(syncRef.current);
+        syncRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isRunning) {
+      pulseAnim.stopAnimation();
+      pulseAnim.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    loop.start();
+    return () => loop.stop();
+  }, [isRunning, pulseAnim]);
 
   const getElapsedSeconds = () => {
     if (!runStartedAtRef.current) return 0;
@@ -234,6 +260,74 @@ export default function RunScreen({ navigation, route }) {
     return elapsed;
   };
 
+  const syncTrackingSessionToUi = useCallback(async () => {
+    const session = await getRunTrackingSession();
+    if (!session?.active) return null;
+
+    const startedAt = toNumber(session.startedAt, 0);
+    if (startedAt > 0) {
+      runStartedAtRef.current = startedAt;
+      runStartedTimestampRef.current = startedAt;
+      setSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }
+
+    const nextDistanceKm = toNumber(session.distanceKm, 0);
+    const nextElevation = toNumber(session.elevationGainM, 0);
+    const nextSpeed = toNumber(session.lastSpeedKmh, 0);
+    const nextCoords = Array.isArray(session.coords) ? session.coords : [];
+    const nextPoint = session.currentPoint || nextCoords[nextCoords.length - 1] || null;
+
+    setDistance(nextDistanceKm);
+    setElevationGainM(nextElevation);
+    setInstantSpeedKmh(nextSpeed);
+    setCoords(nextCoords);
+    setLocation(nextPoint);
+
+    return session;
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const restoreRunningSession = async () => {
+      const session = await getRunTrackingSession();
+      if (!mounted || !session?.active) return;
+
+      setIsRunning(true);
+      await syncTrackingSessionToUi();
+      startTimer();
+      await startStepTracking();
+    };
+
+    restoreRunningSession();
+
+    return () => {
+      mounted = false;
+    };
+  }, [syncTrackingSessionToUi]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      if (syncRef.current) {
+        clearInterval(syncRef.current);
+        syncRef.current = null;
+      }
+      return;
+    }
+
+    syncTrackingSessionToUi();
+    syncRef.current = setInterval(() => {
+      syncTrackingSessionToUi();
+    }, SESSION_SYNC_MS);
+
+    return () => {
+      if (syncRef.current) {
+        clearInterval(syncRef.current);
+        syncRef.current = null;
+      }
+    };
+  }, [isRunning, syncTrackingSessionToUi]);
+
   const focusMapOnPoint = (point, duration = 600) => {
     if (!mapViewRef.current || !point) return;
 
@@ -248,11 +342,11 @@ export default function RunScreen({ navigation, route }) {
     );
   };
 
-  const fitMapToRoute = async () => {
+  const fitMapToRoute = async (routeCoords = coords, focusLocation = location) => {
     if (!mapViewRef.current) return;
 
-    if (coords.length > 1 && typeof mapViewRef.current.fitToCoordinates === 'function') {
-      mapViewRef.current.fitToCoordinates(coords, {
+    if (routeCoords.length > 1 && typeof mapViewRef.current.fitToCoordinates === 'function') {
+      mapViewRef.current.fitToCoordinates(routeCoords, {
         edgePadding: SNAP_PADDING,
         animated: false,
       });
@@ -260,86 +354,36 @@ export default function RunScreen({ navigation, route }) {
       return;
     }
 
-    if (location) {
-      focusMapOnPoint(location, 0);
+    if (focusLocation) {
+      focusMapOnPoint(focusLocation, 0);
       await wait(300);
     }
   };
 
   const requestLocationPermission = async () => {
-    let Location;
     try {
-      Location = await import('expo-location');
-    } catch (error) {
-      Alert.alert('Error', 'Location module is unavailable');
-      return null;
-    }
+      const permission = await requestRunTrackingPermissions();
+      setHasLocationPermission(permission.foregroundGranted);
 
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      const granted = status === 'granted';
-      setHasLocationPermission(granted);
-      if (!granted) {
+      if (!permission.foregroundGranted) {
         Alert.alert('Location required', 'Please allow location permission');
-        return null;
+        return false;
       }
-      return Location;
+
+      if (Platform.OS === 'android' && !permission.backgroundGranted) {
+        Alert.alert(
+          'Background location required',
+          'Please allow "All the time" location permission so tracking keeps running with screen off or other apps.'
+        );
+        return false;
+      }
+
+      return true;
     } catch (error) {
       setHasLocationPermission(false);
       Alert.alert('Error', 'Unable to request location permission');
-      return null;
+      return false;
     }
-  };
-
-  const getAccuracyMeters = coords => {
-    const raw = Number(coords?.accuracy);
-    return Number.isFinite(raw) ? raw : null;
-  };
-
-  const enableHighAccuracyProviderIfAvailable = async Location => {
-    if (Platform.OS !== 'android' || typeof Location.enableNetworkProviderAsync !== 'function') {
-      return;
-    }
-
-    try {
-      await Location.enableNetworkProviderAsync();
-    } catch (error) {
-      // User can decline the system dialog; tracking still starts with current provider settings.
-    }
-  };
-
-  const getBestInitialFix = async Location => {
-    let best = null;
-
-    for (let attempt = 0; attempt < INITIAL_FIX_ATTEMPTS; attempt += 1) {
-      try {
-        const candidate = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.BestForNavigation,
-          maximumAge: 0,
-          timeout: 12000,
-          mayShowUserSettingsDialog: true,
-        });
-
-        const candidateAccuracy = getAccuracyMeters(candidate.coords);
-        const bestAccuracy = best ? getAccuracyMeters(best.coords) : null;
-
-        if (
-          !best ||
-          (candidateAccuracy !== null &&
-            (bestAccuracy === null || candidateAccuracy < bestAccuracy))
-        ) {
-          best = candidate;
-        }
-
-        if (candidateAccuracy !== null && candidateAccuracy <= TARGET_INITIAL_ACCURACY_M) {
-          break;
-        }
-      } catch (error) {
-        // Keep trying; some devices need multiple attempts for first GPS lock.
-      }
-    }
-
-    return best;
   };
 
   const startStepTracking = async () => {
@@ -391,38 +435,27 @@ export default function RunScreen({ navigation, route }) {
 
     setIsBusy(true);
 
-    const Location = await requestLocationPermission();
-    if (!Location) {
+    const permissionGranted = await requestLocationPermission();
+    if (!permissionGranted) {
       setIsBusy(false);
       return;
     }
 
     try {
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
-      if (!servicesEnabled) {
-        Alert.alert('Location required', 'Please enable location services (GPS)');
-        setIsBusy(false);
-        return;
-      }
-
-      await enableHighAccuracyProviderIfAvailable(Location);
-
+      await clearRunTrackingSession();
       resetRunState();
-      runStartedAtRef.current = Date.now();
-      runStartedTimestampRef.current = Date.now();
+
+      const startedAt = Date.now();
+      runStartedAtRef.current = startedAt;
+      runStartedTimestampRef.current = startedAt;
 
       await startStepTracking();
 
+      let current = null;
       try {
-        const current = await getBestInitialFix(Location);
-        if (!current) {
-          throw new Error('No initial GPS fix');
-        }
-
-        const initialAccuracy = getAccuracyMeters(current.coords);
-        if (initialAccuracy !== null && initialAccuracy > MAX_LOCATION_ACCURACY_M) {
-          throw new Error('Initial accuracy is too low');
-        }
+        current = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+        });
 
         const initialPoint = {
           latitude: current.coords.latitude,
@@ -431,115 +464,28 @@ export default function RunScreen({ navigation, route }) {
 
         setLocation(initialPoint);
         setCoords([initialPoint]);
-        const initialTimestamp = Number(current.timestamp);
-        lastAcceptedPointRef.current = initialPoint;
-        lastAcceptedTimestampRef.current = Number.isFinite(initialTimestamp)
-          ? initialTimestamp
-          : Date.now();
         focusMapOnPoint(initialPoint, 650);
 
-        const speedMs = Number(current.coords.speed);
+        const speedMs = toNumber(current.coords.speed, NaN);
         if (Number.isFinite(speedMs) && speedMs > 0) {
           setInstantSpeedKmh(speedMs * 3.6);
         }
-
-        const altitude = Number(current.coords.altitude);
-        if (Number.isFinite(altitude)) {
-          lastAltitudeRef.current = altitude;
-        }
       } catch (error) {
-        // If initial GPS fix fails, watchPositionAsync will still attempt updates.
+        // Continue even if the first GPS fix is still pending.
       }
 
+      await startRunTracking({
+        startedAt,
+        seedLocation: current,
+      });
+
       startTimer();
-
-      watcherRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.BestForNavigation,
-          timeInterval: 1000,
-          distanceInterval: 1,
-          mayShowUserSettingsDialog: true,
-        },
-        loc => {
-          const latitude = Number(loc.coords.latitude);
-          const longitude = Number(loc.coords.longitude);
-          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-            return;
-          }
-
-          const signalAccuracy = getAccuracyMeters(loc.coords);
-          if (signalAccuracy !== null && signalAccuracy > MAX_LOCATION_ACCURACY_M) {
-            return;
-          }
-
-          const point = {
-            latitude,
-            longitude,
-          };
-
-          const rawTimestamp = Number(loc.timestamp);
-          const pointTimestamp = Number.isFinite(rawTimestamp) ? rawTimestamp : Date.now();
-          const lastPoint = lastAcceptedPointRef.current;
-
-          if (!lastPoint) {
-            setCoords([point]);
-            lastAcceptedPointRef.current = point;
-            lastAcceptedTimestampRef.current = pointTimestamp;
-          } else {
-            const segment = distanceKmBetween(lastPoint, point);
-            if (segment > MAX_SEGMENT_KM) {
-              return;
-            }
-
-            if (segment >= MIN_SEGMENT_KM) {
-              const previousAcceptedPoint = lastPoint;
-              const lastTimestamp = lastAcceptedTimestampRef.current;
-              if (Number.isFinite(lastTimestamp) && pointTimestamp > lastTimestamp) {
-                const elapsedHours = (pointTimestamp - lastTimestamp) / 3600000;
-                const inferredSpeedKmh = elapsedHours > 0 ? segment / elapsedHours : 0;
-                if (inferredSpeedKmh > MAX_PLAUSIBLE_RUNNING_SPEED_KMH) {
-                  return;
-                }
-              }
-
-              setDistance(previousDistance => previousDistance + segment);
-              setCoords(prev =>
-                prev.length === 0 && previousAcceptedPoint
-                  ? [previousAcceptedPoint, point]
-                  : [...prev, point]
-              );
-              lastAcceptedPointRef.current = point;
-              lastAcceptedTimestampRef.current = pointTimestamp;
-            }
-          }
-
-          setLocation(point);
-
-          const speedMs = Number(loc.coords.speed);
-          if (Number.isFinite(speedMs) && speedMs > 0) {
-            setInstantSpeedKmh(speedMs * 3.6);
-          } else {
-            setInstantSpeedKmh(0);
-          }
-
-          const altitude = Number(loc.coords.altitude);
-          if (Number.isFinite(altitude)) {
-            if (Number.isFinite(lastAltitudeRef.current)) {
-              const gain = altitude - lastAltitudeRef.current;
-              if (gain > 0 && gain < 4) {
-                setElevationGainM(prev => prev + gain);
-              }
-            }
-            lastAltitudeRef.current = altitude;
-          }
-        }
-      );
-
       setIsRunning(true);
+      await syncTrackingSessionToUi();
     } catch (error) {
-      stopLocationTracking();
       stopStepTracking();
       stopTimer();
+      await clearRunTrackingSession();
       resetRunState();
       Alert.alert('Error', 'Unable to start location tracking');
     } finally {
@@ -547,11 +493,11 @@ export default function RunScreen({ navigation, route }) {
     }
   };
 
-  const captureMapSnapshot = async () => {
+  const captureMapSnapshot = async (routeCoords = coords, focusLocation = location) => {
     if (!MAP_ENABLED || !MapView || !mapCaptureRef.current) return null;
 
     try {
-      await fitMapToRoute();
+      await fitMapToRoute(routeCoords, focusLocation);
 
       const { captureRef } = require('react-native-view-shot');
       const tempUri = await captureRef(mapCaptureRef.current, {
@@ -574,17 +520,40 @@ export default function RunScreen({ navigation, route }) {
     setIsBusy(true);
     setIsRunning(false);
 
-    stopLocationTracking();
     stopStepTracking();
-
     const runSeconds = stopTimer();
-    const normalizedDistance = Number(distance.toFixed(2));
 
-    if (runSeconds < MIN_SAVE_SECONDS || normalizedDistance < MIN_SAVE_DISTANCE_KM) {
+    let trackedSession = null;
+    try {
+      trackedSession = await stopRunTracking();
+    } catch (error) {
+      trackedSession = await getRunTrackingSession();
+    }
+
+    const trackedDistanceKm = toNumber(trackedSession?.distanceKm, NaN);
+    const finalDistanceKm = Number.isFinite(trackedDistanceKm) ? trackedDistanceKm : toNumber(distance, 0);
+    const roundedDistanceKm = Number(finalDistanceKm.toFixed(3));
+    const trackedRoute = Array.isArray(trackedSession?.coords) ? trackedSession.coords : [];
+    const finalRoute = trackedRoute.length > 0 ? trackedRoute : coords;
+    const finalPoint = trackedSession?.currentPoint || finalRoute[finalRoute.length - 1] || location;
+    const trackedElevationGainM = toNumber(trackedSession?.elevationGainM, NaN);
+    const finalElevationGainM = Number.isFinite(trackedElevationGainM)
+      ? trackedElevationGainM
+      : toNumber(elevationGainM, 0);
+    const finalCalories = Math.max(0, Math.round(finalDistanceKm * userWeightKg * KCAL_PER_KM_PER_KG));
+
+    setDistance(finalDistanceKm);
+    setCoords(finalRoute);
+    setLocation(finalPoint);
+    setElevationGainM(finalElevationGainM);
+    setInstantSpeedKmh(toNumber(trackedSession?.lastSpeedKmh, 0));
+
+    if (runSeconds < MIN_SAVE_SECONDS || finalDistanceKm < MIN_SAVE_DISTANCE_KM) {
       Alert.alert(
         'Run not saved',
         `Run must be at least ${MIN_SAVE_SECONDS} seconds and ${MIN_SAVE_DISTANCE_KM} km.`
       );
+      await clearRunTrackingSession();
       resetRunState();
       setIsBusy(false);
       return;
@@ -594,28 +563,32 @@ export default function RunScreen({ navigation, route }) {
       const user = auth.currentUser;
       if (!user) {
         Alert.alert('Error', 'You are not logged in');
+        await clearRunTrackingSession();
         resetRunState();
         setIsBusy(false);
         return;
       }
 
-      const mapImage = await captureMapSnapshot();
-      const snapshotSteps = usingSensorSteps ? stepCount : estimateSteps(normalizedDistance);
-      const snapshotAvgSpeed = normalizedDistance / (runSeconds / 3600);
+      const mapImage = await captureMapSnapshot(finalRoute, finalPoint);
+      const snapshotSteps = usingSensorSteps ? stepCount : estimateSteps(finalDistanceKm);
+      const snapshotAvgSpeed = finalDistanceKm / (runSeconds / 3600);
 
       const runData = {
         time: runSeconds,
-        distance: normalizedDistance,
-        pace: formatPace(runSeconds, normalizedDistance),
-        route: coords,
+        distance: roundedDistanceKm,
+        pace: formatPace(runSeconds, finalDistanceKm),
+        route: finalRoute,
         mapImage,
         steps: snapshotSteps,
         stepSource: usingSensorSteps ? 'sensor' : 'estimated',
         averageSpeedKmh: Number(snapshotAvgSpeed.toFixed(2)),
-        elevationGainM: Number(elevationGainM.toFixed(1)),
-        calories,
+        elevationGainM: Number(finalElevationGainM.toFixed(1)),
+        calories: finalCalories,
         createdAt: Date.now(),
-        startedAt: runStartedTimestampRef.current || Date.now() - runSeconds * 1000,
+        startedAt: toNumber(
+          trackedSession?.startedAt,
+          runStartedTimestampRef.current || Date.now() - runSeconds * 1000
+        ),
         endedAt: Date.now(),
       };
 
@@ -626,16 +599,20 @@ export default function RunScreen({ navigation, route }) {
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to save run');
     } finally {
+      await clearRunTrackingSession();
       resetRunState();
       setIsBusy(false);
     }
   };
 
-  const pace = formatPace(seconds, distance);
+  const pace =
+    distance >= MIN_LIVE_PACE_DISTANCE_KM
+      ? formatPace(seconds, distance)
+      : '--';
   const statusText = isBusy
     ? 'Preparing session...'
     : isRunning
-      ? 'Tracking live'
+      ? 'Live + background tracking'
       : hasLocationPermission === false
         ? 'Location permission required'
         : 'Ready to run';
@@ -650,25 +627,58 @@ export default function RunScreen({ navigation, route }) {
     ? 'Add EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env and rebuild to enable map.'
     : 'react-native-maps is unavailable in this build.';
 
+  const liveDotScale = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.32],
+  });
+  const liveDotOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.85, 0.28],
+  });
+
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={gradients.appBackground}
+        colors={isLiveMode ? gradients.successButton : gradients.appBackground}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
-      <View style={styles.glowA} />
-      <View style={styles.glowB} />
+      <View style={[styles.glowA, isLiveMode && styles.glowAlive]} />
+      <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
 
       <View style={styles.headerRow}>
         <Text style={styles.header}>Run Session</Text>
-        <View style={styles.statusChip}>
-          <Text style={styles.statusChipText}>{statusText}</Text>
+        <View style={[styles.statusChip, isLiveMode && styles.statusChipLive]}>
+          <Text style={[styles.statusChipText, isLiveMode && styles.statusChipTextLive]}>
+            {statusText}
+          </Text>
         </View>
       </View>
 
-      <View style={styles.heroCard}>
+      <View style={[styles.heroCard, isLiveMode && styles.heroCardLive]}>
+        <View style={styles.heroTopRow}>
+          {isLiveMode ? (
+            <View style={styles.liveBadge}>
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.liveDotPulse,
+                  {
+                    opacity: liveDotOpacity,
+                    transform: [{ scale: liveDotScale }],
+                  },
+                ]}
+              />
+              <View style={styles.liveDotCore} />
+              <Text style={styles.liveBadgeText}>LIVE TRACKING</Text>
+            </View>
+          ) : (
+            <Text style={styles.preRunHint}>Tap start to begin your run</Text>
+          )}
+          {isLiveMode ? <Text style={styles.heroHint}>Background on</Text> : null}
+        </View>
+
         <Text style={styles.time}>{formatClock(seconds)}</Text>
         <View style={styles.row}>
           <Stat value={distance.toFixed(2)} label="Distance (km)" />
@@ -684,7 +694,13 @@ export default function RunScreen({ navigation, route }) {
         <MiniStat label="Elev Gain" value={`${Math.round(elevationGainM)} m`} />
       </View>
 
-      <View style={styles.mapCard} ref={mapCaptureRef} collapsable={false}>
+      {isLiveMode ? (
+        <Text style={styles.bgTrackingNote}>
+          Tracking keeps running in background. Check the Android notification for live distance.
+        </Text>
+      ) : null}
+
+      <View style={[styles.mapCard, isLiveMode && styles.mapCardLive]} ref={mapCaptureRef} collapsable={false}>
         {MAP_ENABLED && MapView ? (
           <MapView
             ref={mapViewRef}
@@ -703,7 +719,7 @@ export default function RunScreen({ navigation, route }) {
             ) : null}
 
             {Polyline && coords.length > 1 ? (
-              <Polyline coordinates={coords} strokeWidth={6} strokeColor="#f97316" />
+              <Polyline coordinates={coords} strokeWidth={6} strokeColor={isLiveMode ? '#22c55e' : '#f97316'} />
             ) : null}
           </MapView>
         ) : (
@@ -715,7 +731,11 @@ export default function RunScreen({ navigation, route }) {
       </View>
 
       <Pressable
-        style={[styles.actionButton, isBusy && styles.actionButtonDisabled]}
+        style={[
+          styles.actionButton,
+          isBusy && styles.actionButtonDisabled,
+          isLiveMode && styles.actionButtonLive,
+        ]}
         onPress={isRunning ? stopRun : startRun}
         disabled={isBusy}
       >
@@ -769,6 +789,11 @@ const styles = StyleSheet.create({
     top: -60,
     right: -40,
   },
+  glowAlive: {
+    backgroundColor: 'rgba(34,197,94,0.26)',
+    top: -50,
+    right: -25,
+  },
   glowB: {
     position: 'absolute',
     width: 180,
@@ -777,6 +802,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(249,115,22,0.16)',
     bottom: 120,
     left: -50,
+  },
+  glowBLive: {
+    backgroundColor: 'rgba(14,165,233,0.14)',
+    bottom: 130,
   },
   headerRow: {
     flexDirection: 'row',
@@ -796,19 +825,77 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  statusChipLive: {
+    backgroundColor: 'rgba(22,163,74,0.22)',
+    borderColor: 'rgba(134,239,172,0.55)',
+  },
   statusChipText: {
     color: palette.textSecondary,
     fontSize: 11,
     fontWeight: '600',
   },
+  statusChipTextLive: {
+    color: '#dcfce7',
+  },
   heroCard: {
     backgroundColor: 'rgba(15,23,42,0.75)',
     borderRadius: radii.lg,
-    paddingVertical: 18,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: palette.borderSoft,
     ...shadows.light,
+  },
+  heroCardLive: {
+    backgroundColor: 'rgba(15,23,42,0.85)',
+    borderColor: 'rgba(74,222,128,0.45)',
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minHeight: 24,
+  },
+  preRunHint: {
+    color: palette.textMuted,
+    fontSize: 12,
+  },
+  heroHint: {
+    color: '#bbf7d0',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  liveBadge: {
+    borderRadius: radii.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(22,163,74,0.24)',
+    borderWidth: 1,
+    borderColor: 'rgba(134,239,172,0.65)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  liveDotPulse: {
+    position: 'absolute',
+    left: 10,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#86efac',
+  },
+  liveDotCore: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#22c55e',
+    marginRight: 6,
+  },
+  liveBadgeText: {
+    color: '#dcfce7',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.45,
   },
   time: {
     color: palette.textPrimary,
@@ -817,6 +904,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: 1,
     marginBottom: 8,
+    marginTop: 6,
   },
   row: {
     flexDirection: 'row',
@@ -841,7 +929,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     marginTop: 12,
-    marginBottom: 12,
+    marginBottom: 10,
     rowGap: 8,
   },
   miniStatCard: {
@@ -863,6 +951,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
+  bgTrackingNote: {
+    color: '#d1fae5',
+    fontSize: 11,
+    marginBottom: 10,
+  },
   mapCard: {
     flex: 1,
     borderRadius: radii.lg,
@@ -872,6 +965,9 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgDeep,
     ...shadows.light,
     marginBottom: 14,
+  },
+  mapCardLive: {
+    borderColor: 'rgba(74,222,128,0.48)',
   },
   mapPlaceholder: {
     flex: 1,
@@ -894,6 +990,11 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 8,
     ...shadows.light,
+  },
+  actionButtonLive: {
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
   },
   actionButtonGradient: {
     paddingVertical: 15,

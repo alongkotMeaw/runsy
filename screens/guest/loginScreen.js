@@ -17,7 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { ref, get, query, orderByChild, equalTo } from 'firebase/database';
 
-import { auth, database } from '../../firebaseConfig';
+import { auth, database, firebaseSetup } from '../../firebaseConfig';
 import {
   gradients,
   palette,
@@ -27,17 +27,35 @@ import {
   typography,
 } from '../../theme/premiumTheme';
 
-const getLoginErrorMessage = code => {
+const getLoginErrorMessage = error => {
+  const code = error?.code;
+
   switch (code) {
     case 'auth/invalid-credential':
       return 'Invalid email/username or password.';
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
     case 'auth/user-disabled':
       return 'This account has been disabled.';
+    case 'auth/network-request-failed':
+      return 'Network error. Check your internet connection.';
+    case 'auth/missing-api-key':
+    case 'auth/invalid-api-key':
+    case 'auth/configuration-not-found':
+      return 'Firebase config is missing or invalid in this build.';
+    case 'PERMISSION_DENIED':
+      return 'Username lookup is blocked. Please log in with email instead.';
     case 'auth/too-many-requests':
       return 'Too many attempts. Please try again later.';
     default:
-      return 'Unable to log in right now.';
+      return code ? `Unable to log in right now (${code}).` : 'Unable to log in right now.';
   }
+};
+
+const getErrorDetails = error => {
+  const code = error?.code || 'unknown';
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return message ? `\n\nCode: ${code}\nDetail: ${message}` : `\n\nCode: ${code}`;
 };
 
 export default function LoginScreen({ navigation }) {
@@ -71,6 +89,14 @@ export default function LoginScreen({ navigation }) {
   const handleLogin = async () => {
     if (isSubmitting) return;
 
+    if (!firebaseSetup.isConfigured) {
+      Alert.alert(
+        'Firebase config missing',
+        `Missing env vars: ${firebaseSetup.missingEnvVars.join(', ')}`
+      );
+      return;
+    }
+
     const normalizedIdentifier = identifier.trim();
     const normalizedPassword = password.trim();
 
@@ -87,7 +113,7 @@ export default function LoginScreen({ navigation }) {
       if (!normalizedIdentifier.includes('@')) {
         const emailFromDB = await getEmailFromUsername(normalizedIdentifier);
         if (!emailFromDB) {
-          Alert.alert('Login failed', 'Username was not found.');
+          Alert.alert('Login failed', 'Username was not found. Try logging in with email.');
           return;
         }
         emailToLogin = emailFromDB;
@@ -95,7 +121,8 @@ export default function LoginScreen({ navigation }) {
 
       await signInWithEmailAndPassword(auth, emailToLogin, normalizedPassword);
     } catch (error) {
-      Alert.alert('Login failed', getLoginErrorMessage(error?.code));
+      console.error('[LoginScreen] Login failed', error);
+      Alert.alert('Login failed', `${getLoginErrorMessage(error)}${getErrorDetails(error)}`);
     } finally {
       setIsSubmitting(false);
     }
