@@ -345,23 +345,6 @@ export default function DashBoard({ route, navigation }) {
               />
             </View>
 
-            <View style={styles.quickActionRow}>
-              <Pressable
-                style={styles.quickAction}
-                onPress={() => navigation.navigate('History', { uid })}
-              >
-                <Ionicons name="time-outline" size={18} color={palette.accent} />
-                <Text style={styles.quickActionText}>Run History</Text>
-              </Pressable>
-              <Pressable
-                style={styles.quickAction}
-                onPress={() => navigation.navigate('Profile', { uid })}
-              >
-                <Ionicons name="person-outline" size={18} color={palette.accent} />
-                <Text style={styles.quickActionText}>Profile</Text>
-              </Pressable>
-            </View>
-
             <Text style={styles.sectionTitle}>Leaderboard</Text>
             {leaders.length === 0 ? (
               <Text style={styles.emptyText}>No ranking data yet.</Text>
@@ -665,28 +648,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
     lineHeight: 16,
-  },
-  quickActionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: spacing.sectionGap,
-  },
-  quickAction: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: palette.borderSoft,
-    backgroundColor: 'rgba(13,22,39,0.82)',
-    paddingVertical: 12,
-  },
-  quickActionText: {
-    color: palette.textPrimary,
-    fontSize: 13,
-    fontWeight: '700',
   },
   rankList: {
     gap: 8,

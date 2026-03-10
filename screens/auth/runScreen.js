@@ -10,8 +10,10 @@ import {
   Platform,
   Animated,
   Easing,
+  ScrollView,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
@@ -101,6 +103,8 @@ const SESSION_SYNC_MS = 1100;
 /* ---------- Screen ---------- */
 export default function RunScreen({ navigation, route }) {
   const uid = route?.params?.uid || auth.currentUser?.uid;
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
 
   const [location, setLocation] = useState(null);
   const [coords, setCoords] = useState([]);
@@ -153,6 +157,16 @@ export default function RunScreen({ navigation, route }) {
   const calories = Math.max(0, Math.round(distance * userWeightKg * KCAL_PER_KM_PER_KG));
   const isLiveMode = isRunning && !isBusy;
   const isSessionExpanded = isRunning || isBusy;
+  const isCompactScreen = windowHeight < 820;
+  const isShortScreen = windowHeight < 740;
+  const bottomTabPadding = Math.max(8, insets.bottom + 2);
+  const bottomTabHeight = 64 + bottomTabPadding;
+  const actionDockBottom = bottomTabHeight + (isShortScreen ? 14 : 18);
+  const scrollBottomPadding = actionDockBottom + 84;
+  const liveActionDockBottom = Math.max(14, insets.bottom + 10);
+  const liveContentBottomPadding = liveActionDockBottom + 74;
+  const preRunMapMinHeight = isShortScreen ? 172 : isCompactScreen ? 196 : 250;
+  const liveMapMinHeight = isShortScreen ? 280 : isCompactScreen ? 320 : 360;
 
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
@@ -662,21 +676,6 @@ export default function RunScreen({ navigation, route }) {
     : isRunning
       ? 'STOP & SAVE'
       : 'START RUN';
-  const locationReadyText = hasLocationPermission === true
-    ? 'Background-ready'
-    : hasLocationPermission === false
-      ? 'Permission needed'
-      : 'Will request on start';
-  const stepReadyText = stepSensorAvailable === true
-    ? hasStepPermission === true
-      ? 'Sensor ready'
-      : 'Permission needed'
-    : stepSensorAvailable === false
-      ? 'Estimated from distance'
-      : 'Will check on start';
-  const mapReadyText = MAP_ENABLED && MapView
-    ? 'Preview available'
-    : 'Map key/build missing';
   const mapPanelTitle = isLiveMode ? 'LIVE ROUTE' : 'ROUTE PREVIEW';
   const mapPanelStatus = !MAP_ENABLED || !MapView
     ? 'Map unavailable'
@@ -699,31 +698,51 @@ export default function RunScreen({ navigation, route }) {
     outputRange: [0.85, 0.28],
   });
 
-  return (
-    <SafeAreaView style={[styles.container, isSessionExpanded && styles.containerExpanded]}>
+  const actionButtonNode = (
+    <Pressable
+      style={[
+        styles.actionButton,
+        isBusy && styles.actionButtonDisabled,
+        isLiveMode && styles.actionButtonLive,
+        isSessionExpanded && styles.actionButtonExpanded,
+        !isSessionExpanded && styles.actionButtonDocked,
+      ]}
+      onPress={isRunning ? stopRun : startRun}
+      disabled={isBusy}
+    >
       <LinearGradient
-        colors={gradients.appBackground}
+        colors={isRunning ? gradients.dangerButton : gradients.accentButton}
         start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <View style={[styles.glowA, isLiveMode && styles.glowAlive]} />
-      <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
+        end={{ x: 1, y: 0 }}
+        style={styles.actionButtonGradient}
+      >
+        <Text style={styles.actionText}>{buttonText}</Text>
+      </LinearGradient>
+    </Pressable>
+  );
 
-      <View style={styles.headerRow}>
-        <Text style={styles.header}>Run Session</Text>
-        <View style={[styles.statusChip, isLiveMode && styles.statusChipLive]}>
-          <Text style={[styles.statusChipText, isLiveMode && styles.statusChipTextLive]}>
-            {statusText}
-          </Text>
+  const screenContent = (
+    <>
+      {!isSessionExpanded ? (
+        <View style={styles.headerRow}>
+          <Text style={styles.header}>Run Session</Text>
+          <View style={[styles.statusChip, isLiveMode && styles.statusChipLive]}>
+            <Text style={[styles.statusChipText, isLiveMode && styles.statusChipTextLive]}>
+              {statusText}
+            </Text>
+          </View>
         </View>
-      </View>
+      ) : null}
 
       <LinearGradient
         colors={gradients.hero}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={[styles.heroCard, isLiveMode && styles.heroCardLive]}
+        style={[
+          styles.heroCard,
+          isLiveMode && styles.heroCardLive,
+          isCompactScreen && styles.heroCardCompact,
+        ]}
       >
         <View style={styles.heroTopRow}>
           {isLiveMode ? (
@@ -747,7 +766,7 @@ export default function RunScreen({ navigation, route }) {
           {isLiveMode ? <Text style={styles.heroHint}>GPS active</Text> : null}
         </View>
 
-        <Text style={styles.time}>{formatClock(seconds)}</Text>
+        <Text style={[styles.time, isCompactScreen && styles.timeCompact]}>{formatClock(seconds)}</Text>
         <View style={styles.row}>
           <Stat value={distance.toFixed(2)} label="Distance (km)" />
           <Stat value={pace} label="Pace (/km)" />
@@ -755,67 +774,45 @@ export default function RunScreen({ navigation, route }) {
         </View>
       </LinearGradient>
 
-      <View style={styles.metricsRow}>
+      <View style={[styles.metricsRow, isCompactScreen && styles.metricsRowCompact]}>
         <MiniStat
           label={usingSensorSteps ? 'Steps' : 'Est. Steps'}
           value={totalSteps.toLocaleString()}
           icon="walk-outline"
           tintColor="#34d399"
+          compact={isCompactScreen}
         />
         <MiniStat
           label="Cadence"
           value={`${cadenceSpm} spm`}
           icon="timer-outline"
           tintColor="#38bdf8"
+          compact={isCompactScreen}
         />
         <MiniStat
           label="Calories"
           value={`${calories} kcal`}
           icon="flame-outline"
           tintColor="#fb7185"
+          compact={isCompactScreen}
         />
         <MiniStat
           label="Elev Gain"
           value={`${Math.round(elevationGainM)} m`}
           icon="trending-up-outline"
           tintColor="#f59e0b"
+          compact={isCompactScreen}
         />
       </View>
-
-      {!isSessionExpanded ? (
-        <View style={styles.readinessCard}>
-          <View style={styles.readinessHeader}>
-            <Text style={styles.readinessTitle}>Session Readiness</Text>
-            <Text style={styles.readinessSubtitle}>Everything checked before you head out.</Text>
-          </View>
-          <View style={styles.readinessRow}>
-            <ReadinessItem
-              icon="locate-outline"
-              label="Background GPS"
-              value={locationReadyText}
-              tone={hasLocationPermission === true ? 'success' : hasLocationPermission === false ? 'danger' : 'default'}
-            />
-            <ReadinessItem
-              icon="walk-outline"
-              label="Step Tracking"
-              value={stepReadyText}
-              tone={stepSensorAvailable === true && hasStepPermission === true ? 'success' : 'default'}
-            />
-            <ReadinessItem
-              icon="map-outline"
-              label="Map Preview"
-              value={mapReadyText}
-              tone={MAP_ENABLED && MapView ? 'success' : 'default'}
-            />
-          </View>
-        </View>
-      ) : null}
 
       <View
         style={[
           styles.mapCard,
+          !isSessionExpanded && styles.mapCardStatic,
           isLiveMode && styles.mapCardLive,
           isSessionExpanded && styles.mapCardExpanded,
+          !isSessionExpanded && { minHeight: preRunMapMinHeight },
+          isSessionExpanded && { minHeight: liveMapMinHeight },
         ]}
         ref={mapCaptureRef}
         collapsable={false}
@@ -865,28 +862,43 @@ export default function RunScreen({ navigation, route }) {
           </View>
         </View>
       </View>
+    </>
+  );
 
-      <Pressable
-        style={[
-          styles.actionButton,
-          isBusy && styles.actionButtonDisabled,
-          isLiveMode && styles.actionButtonLive,
-          isSessionExpanded && styles.actionButtonExpanded,
-        ]}
-        onPress={isRunning ? stopRun : startRun}
-        disabled={isBusy}
-      >
-        <LinearGradient
-          colors={isRunning ? gradients.dangerButton : gradients.accentButton}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.actionButtonGradient}
-        >
-          <Text style={styles.actionText}>{buttonText}</Text>
-        </LinearGradient>
-      </Pressable>
+  return (
+    <SafeAreaView style={[styles.container, isSessionExpanded && styles.containerExpanded]}>
+      <LinearGradient
+        colors={gradients.appBackground}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={[styles.glowA, isLiveMode && styles.glowAlive]} />
+      <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
 
-      {!isSessionExpanded ? <BottomTab navigation={navigation} uid={uid} active="Run" /> : null}
+      {isSessionExpanded ? (
+        <>
+          <View style={[styles.expandedContent, { paddingBottom: liveContentBottomPadding }]}>
+            {screenContent}
+          </View>
+          <View style={[styles.actionDock, { bottom: liveActionDockBottom }]}>
+            {actionButtonNode}
+          </View>
+        </>
+      ) : (
+        <>
+          <ScrollView
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollBottomPadding }]}
+            showsVerticalScrollIndicator={false}
+          >
+            {screenContent}
+          </ScrollView>
+          <View style={[styles.actionDock, { bottom: actionDockBottom }]}>
+            {actionButtonNode}
+          </View>
+          <BottomTab navigation={navigation} uid={uid} active="Run" />
+        </>
+      )}
     </SafeAreaView>
   );
 }
@@ -900,35 +912,16 @@ function Stat({ value, label }) {
   );
 }
 
-function MiniStat({ value, label, icon, tintColor }) {
+function MiniStat({ value, label, icon, tintColor, compact = false }) {
   return (
-    <View style={styles.miniStatCard}>
+    <View style={[styles.miniStatCard, compact && styles.miniStatCardCompact]}>
       <View style={styles.miniStatTop}>
-        <View style={[styles.miniStatIconWrap, { backgroundColor: `${tintColor}22` }]}>
+        <View style={[styles.miniStatIconWrap, compact && styles.miniStatIconWrapCompact, { backgroundColor: `${tintColor}22` }]}>
           <Ionicons name={icon} size={16} color={tintColor} />
         </View>
-        <Text style={styles.miniStatLabel}>{label}</Text>
+        <Text style={[styles.miniStatLabel, compact && styles.miniStatLabelCompact]}>{label}</Text>
       </View>
-      <Text style={styles.miniStatValue}>{value}</Text>
-    </View>
-  );
-}
-
-function ReadinessItem({ icon, label, value, tone = 'default' }) {
-  const toneStyle = [
-    styles.readinessDot,
-    tone === 'success' ? styles.readinessDotSuccess : null,
-    tone === 'danger' ? styles.readinessDotDanger : null,
-  ];
-
-  return (
-    <View style={styles.readinessItem}>
-      <View style={styles.readinessIconWrap}>
-        <Ionicons name={icon} size={16} color={palette.accent} />
-      </View>
-      <View style={toneStyle} />
-      <Text style={styles.readinessItemLabel}>{label}</Text>
-      <Text style={styles.readinessItemValue}>{value}</Text>
+      <Text style={[styles.miniStatValue, compact && styles.miniStatValueCompact]}>{value}</Text>
     </View>
   );
 }
@@ -939,10 +932,21 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgBase,
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: spacing.screenTop,
-    paddingBottom: 92,
+    paddingBottom: 0,
   },
   containerExpanded: {
     paddingBottom: 16,
+  },
+  scrollContent: {
+    paddingBottom: 16,
+  },
+  expandedContent: {
+    flex: 1,
+  },
+  actionDock: {
+    position: 'absolute',
+    left: spacing.screenHorizontal,
+    right: spacing.screenHorizontal,
   },
   glowA: {
     position: 'absolute',
@@ -1010,6 +1014,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     ...shadows.light,
   },
+  heroCardCompact: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
   heroCardLive: {
     borderColor: 'rgba(74,222,128,0.3)',
   },
@@ -1070,6 +1078,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 6,
   },
+  timeCompact: {
+    fontSize: 40,
+    marginBottom: 6,
+  },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1096,6 +1108,11 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     rowGap: 10,
   },
+  metricsRowCompact: {
+    marginTop: 10,
+    marginBottom: 10,
+    rowGap: 8,
+  },
   miniStatCard: {
     width: '48.6%',
     minHeight: 88,
@@ -1104,6 +1121,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 12,
     ...shadows.light,
+  },
+  miniStatCardCompact: {
+    minHeight: 76,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
   },
   miniStatTop: {
     flexDirection: 'row',
@@ -1119,11 +1141,21 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.08)',
     marginRight: 8,
   },
+  miniStatIconWrapCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 6,
+  },
   miniStatValue: {
     color: palette.textPrimary,
     fontSize: 22,
     fontWeight: '800',
     marginTop: 12,
+  },
+  miniStatValueCompact: {
+    fontSize: 19,
+    marginTop: 10,
   },
   miniStatLabel: {
     color: palette.textMuted,
@@ -1133,72 +1165,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     flex: 1,
   },
-  readinessCard: {
-    ...surfaces.cardStrong,
-    borderRadius: radii.lg,
-    padding: 14,
-    marginBottom: 14,
-    ...shadows.light,
-  },
-  readinessHeader: {
-    marginBottom: 12,
-  },
-  readinessTitle: {
-    color: palette.textPrimary,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  readinessSubtitle: {
-    color: palette.textSecondary,
-    fontSize: 12,
-    marginTop: 4,
-  },
-  readinessRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  readinessItem: {
-    flex: 1,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
-    backgroundColor: 'rgba(15,23,42,0.68)',
-    paddingHorizontal: 10,
-    paddingVertical: 12,
-  },
-  readinessIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(249,115,22,0.14)',
-    marginBottom: 10,
-  },
-  readinessDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: palette.textMuted,
-    marginBottom: 8,
-  },
-  readinessDotSuccess: {
-    backgroundColor: palette.success,
-  },
-  readinessDotDanger: {
-    backgroundColor: palette.danger,
-  },
-  readinessItemLabel: {
-    color: palette.textMuted,
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  readinessItemValue: {
-    color: palette.textPrimary,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 6,
-    lineHeight: 16,
+  miniStatLabelCompact: {
+    fontSize: 9,
   },
   mapCard: {
     flex: 1,
@@ -1210,6 +1178,10 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgDeep,
     ...shadows.light,
     marginBottom: 16,
+  },
+  mapCardStatic: {
+    flex: 0,
+    marginBottom: 0,
   },
   mapCardLive: {
     borderColor: 'rgba(74,222,128,0.26)',
@@ -1290,6 +1262,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 8,
     ...shadows.light,
+  },
+  actionButtonDocked: {
+    marginBottom: 0,
   },
   actionButtonExpanded: {
     marginBottom: 0,
