@@ -12,6 +12,7 @@ import DashBoard from './screens/auth/dashBoard';
 import RunScreen from './screens/auth/runScreen';
 import HistoryScreen from './screens/auth/historyScreen';
 import ProfileScreen from './screens/auth/profileScreen';
+import EditProfileScreen from './screens/auth/editProfileScreen';
 import { auth } from './firebaseConfig';
 import { gradients, palette } from './theme/premiumTheme';
 
@@ -69,6 +70,11 @@ export default function App() {
             <Stack.Screen
               name="Profile"
               component={ProfileScreen}
+              initialParams={{ uid: currentUser.uid }}
+            />
+            <Stack.Screen
+              name="EditProfile"
+              component={EditProfileScreen}
               initialParams={{ uid: currentUser.uid }}
             />
           </>

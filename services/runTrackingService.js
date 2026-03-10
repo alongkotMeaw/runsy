@@ -7,8 +7,11 @@ export const RUN_TRACKING_TASK_NAME = 'runsy-background-location-task';
 
 const RUN_TRACKING_SESSION_KEY = '@runsy/run-tracking-session-v1';
 const MIN_SEGMENT_KM = 0.003;
-const MAX_SEGMENT_KM = 0.3;
-const MAX_COORD_POINTS = 3000;
+const MAX_DIRECT_SEGMENT_KM = 0.3;
+const MAX_SEGMENT_KM = 2.5;
+const MAX_COORD_POINTS = 12000;
+const MAX_POINT_ACCURACY_M = 80;
+const MAX_REASONABLE_SPEED_KMH = 35;
 const NOTIFICATION_REFRESH_MS = 15000;
 
 const toNumber = (value, fallback = 0) => {
@@ -61,6 +64,7 @@ const createSession = startedAt => ({
   lastSpeedKmh: 0,
   lastAltitude: null,
   lastPoint: null,
+  lastTimestamp: null,
   currentPoint: null,
   coords: [],
   notificationUpdatedAt: 0,
@@ -105,19 +109,40 @@ const appendLocationToSession = (session, location) => {
   const point = toPoint(location);
   if (!point) return session;
 
+  const accuracyM = toNumber(location?.coords?.accuracy, NaN);
+
   let distanceKm = toNumber(session.distanceKm, 0);
   let coords = Array.isArray(session.coords) ? session.coords : [];
   let lastPoint = session.lastPoint || null;
+  let lastTimestamp = toNumber(session.lastTimestamp, 0);
+  const currentTimestamp = toNumber(location?.timestamp, Date.now());
 
   if (!lastPoint) {
     coords = [...coords, point];
     lastPoint = point;
+    lastTimestamp = currentTimestamp;
   } else {
     const segmentKm = distanceKmBetween(lastPoint, point);
-    if (segmentKm >= MIN_SEGMENT_KM && segmentKm <= MAX_SEGMENT_KM) {
+    const elapsedSeconds = lastTimestamp > 0 ? Math.max(0, (currentTimestamp - lastTimestamp) / 1000) : 0;
+    const impliedSpeedKmh =
+      elapsedSeconds > 0 ? segmentKm / (elapsedSeconds / 3600) : 0;
+    const speedIsReasonable =
+      elapsedSeconds <= 0 || impliedSpeedKmh <= MAX_REASONABLE_SPEED_KMH;
+    const longSegmentAccuracyOk =
+      segmentKm <= MAX_DIRECT_SEGMENT_KM ||
+      !Number.isFinite(accuracyM) ||
+      accuracyM <= MAX_POINT_ACCURACY_M;
+
+    if (
+      segmentKm >= MIN_SEGMENT_KM &&
+      segmentKm <= MAX_SEGMENT_KM &&
+      speedIsReasonable &&
+      longSegmentAccuracyOk
+    ) {
       distanceKm += segmentKm;
       coords = [...coords, point];
       lastPoint = point;
+      lastTimestamp = currentTimestamp;
     }
   }
 
@@ -149,6 +174,7 @@ const appendLocationToSession = (session, location) => {
     elevationGainM,
     lastAltitude,
     lastPoint,
+    lastTimestamp: lastTimestamp || session.lastTimestamp || null,
     currentPoint: point,
     coords,
     lastSpeedKmh,
@@ -264,8 +290,25 @@ export const stopRunTracking = async () => {
     await Location.stopLocationUpdatesAsync(RUN_TRACKING_TASK_NAME);
   }
 
-  const session = await readSession();
+  let session = await readSession();
   if (!session) return null;
+
+  try {
+    const latestLocation =
+      (await Location.getLastKnownPositionAsync({
+        maxAge: 20000,
+        requiredAccuracy: MAX_POINT_ACCURACY_M,
+      })) ||
+      (await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      }));
+
+    if (latestLocation) {
+      session = appendLocationToSession(session, latestLocation);
+    }
+  } catch (error) {
+    // Keep the session data already collected if the final location read fails.
+  }
 
   const endedSession = {
     ...session,

@@ -49,6 +49,7 @@ export default function BottomTab({ navigation, uid, active }) {
 function TabItem({ name, icon, active, onPress }) {
   return (
     <Pressable onPress={onPress} style={styles.tabItem}>
+      {active ? <View style={styles.activeIndicator} /> : null}
       <View style={[styles.iconWrap, active && styles.iconActive]}>
         <Ionicons
           name={icon}
@@ -82,6 +83,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 10,
+    position: 'relative',
+  },
+  activeIndicator: {
+    position: 'absolute',
+    top: 6,
+    width: 26,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: '#fdba74',
   },
   iconWrap: {
     width: 36,

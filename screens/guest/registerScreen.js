@@ -68,6 +68,7 @@ const getErrorDetails = error => {
 };
 
 export default function RegisterScreen({ navigation }) {
+  const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -239,10 +240,23 @@ export default function RegisterScreen({ navigation }) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          <View style={styles.topBar}>
+            <Pressable style={styles.backButton} onPress={() => navigation.goBack()}>
+              <Ionicons name="chevron-back" size={20} color={palette.textPrimary} />
+            </Pressable>
+          </View>
+
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Set your profile once, then focus on the run.</Text>
 
           <View style={styles.formCard}>
+            <View style={styles.helperCard}>
+              <Ionicons name="shield-checkmark-outline" size={18} color="#fdba74" />
+              <Text style={styles.helperText}>
+                Your profile powers calorie estimates, weekly goals, and post-run history.
+              </Text>
+            </View>
+
             <Text style={styles.label}>Email</Text>
             {inputWithIcon('mail-outline', 'name@email.com', email, setEmail, {
               autoCapitalize: 'none',
@@ -255,10 +269,25 @@ export default function RegisterScreen({ navigation }) {
             })}
 
             <Text style={styles.label}>Password</Text>
-            {inputWithIcon('lock-closed-outline', 'At least 6 characters', password, setPassword, {
-              autoCapitalize: 'none',
-              secureTextEntry: true,
-            })}
+            <View style={styles.inputWrap}>
+              <Ionicons name="lock-closed-outline" size={18} color={palette.textMuted} />
+              <TextInput
+                placeholder="At least 6 characters"
+                placeholderTextColor={palette.textMuted}
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
+                secureTextEntry={!showPassword}
+              />
+              <Pressable onPress={() => setShowPassword(current => !current)}>
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={palette.textMuted}
+                />
+              </Pressable>
+            </View>
 
             <Text style={styles.label}>Gender</Text>
             <View style={styles.pickerBox}>
@@ -357,6 +386,19 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     gap: 8,
   },
+  topBar: {
+    marginBottom: 6,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(13,22,39,0.84)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   title: {
     ...typography.title,
     fontSize: 30,
@@ -373,6 +415,23 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 8,
     ...shadows.soft,
+  },
+  helperCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderRadius: radii.md,
+    backgroundColor: 'rgba(249,115,22,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(249,115,22,0.22)',
+    padding: 12,
+    marginBottom: 2,
+  },
+  helperText: {
+    flex: 1,
+    color: palette.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
   },
   label: {
     color: palette.textSecondary,

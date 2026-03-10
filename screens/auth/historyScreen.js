@@ -6,9 +6,12 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Pressable,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { ref, onValue } from 'firebase/database';
 
 import BottomTab from '../components/BottomTab';
@@ -47,11 +50,23 @@ const formatDateTime = timestamp => {
   return new Date(value).toLocaleString();
 };
 
+const formatPace = (seconds, distanceKm) => {
+  if (!Number.isFinite(seconds) || !Number.isFinite(distanceKm) || distanceKm <= 0) {
+    return '--';
+  }
+
+  const paceSeconds = Math.round(seconds / distanceKm);
+  const minutes = Math.floor(paceSeconds / 60);
+  const secondsLeft = paceSeconds % 60;
+  return `${minutes}:${secondsLeft.toString().padStart(2, '0')}`;
+};
+
 export default function HistoryScreen({ navigation, route }) {
   const uid = route?.params?.uid || auth.currentUser?.uid || null;
 
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedRun, setSelectedRun] = useState(null);
 
   useEffect(() => {
     if (!uid) {
@@ -89,6 +104,30 @@ export default function HistoryScreen({ navigation, route }) {
     };
   }, [runs]);
 
+  const highlights = useMemo(() => {
+    if (!runs.length) {
+      return {
+        bestDistance: 0,
+        averagePace: '--',
+        routeCoverage: 0,
+      };
+    }
+
+    const bestDistance = runs.reduce(
+      (currentBest, run) => Math.max(currentBest, toNumber(run.distance)),
+      0
+    );
+    const totalDistance = runs.reduce((sum, run) => sum + toNumber(run.distance), 0);
+    const totalTime = runs.reduce((sum, run) => sum + toNumber(run.time), 0);
+    const routeCoverage = runs.filter(run => Boolean(run.mapImage)).length;
+
+    return {
+      bestDistance: Number(bestDistance.toFixed(2)),
+      averagePace: formatPace(totalTime, totalDistance),
+      routeCoverage,
+    };
+  }, [runs]);
+
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
@@ -109,6 +148,24 @@ export default function HistoryScreen({ navigation, route }) {
         <SummaryChip label="Time" value={formatDuration(totals.duration)} />
       </View>
 
+      <View style={styles.highlightRow}>
+        <HighlightCard
+          icon="ribbon-outline"
+          label="Best Distance"
+          value={`${highlights.bestDistance.toFixed(2)} km`}
+        />
+        <HighlightCard
+          icon="speedometer-outline"
+          label="Avg Pace"
+          value={`${highlights.averagePace}/km`}
+        />
+        <HighlightCard
+          icon="map-outline"
+          label="Snapshots"
+          value={`${highlights.routeCoverage}/${runs.length || 0}`}
+        />
+      </View>
+
       {loading ? (
         <View style={styles.loaderWrap}>
           <ActivityIndicator size="small" color={palette.accent} />
@@ -120,8 +177,15 @@ export default function HistoryScreen({ navigation, route }) {
         >
           {runs.length === 0 ? (
             <View style={styles.emptyCard}>
+              <Ionicons name="time-outline" size={22} color={palette.accent} />
               <Text style={styles.emptyTitle}>No runs yet</Text>
               <Text style={styles.emptySub}>Start your first run to see it here.</Text>
+              <Pressable
+                style={styles.emptyAction}
+                onPress={() => navigation.navigate('Run', { uid })}
+              >
+                <Text style={styles.emptyActionText}>Start a Run</Text>
+              </Pressable>
             </View>
           ) : (
             runs.map(run => (
@@ -132,13 +196,59 @@ export default function HistoryScreen({ navigation, route }) {
                 pace={run.pace || '--'}
                 steps={toNumber(run.steps)}
                 calories={toNumber(run.calories)}
+                averageSpeedKmh={toNumber(run.averageSpeedKmh)}
                 image={run.mapImage}
                 createdAt={run.createdAt}
+                onPressImage={() =>
+                  setSelectedRun({
+                    image: run.mapImage,
+                    distance: toNumber(run.distance).toFixed(2),
+                    duration: formatDuration(run.time),
+                    pace: run.pace || '--',
+                    speed: toNumber(run.averageSpeedKmh),
+                    createdAt: run.createdAt,
+                  })
+                }
               />
             ))
           )}
         </ScrollView>
       )}
+
+      <Modal
+        visible={Boolean(selectedRun)}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setSelectedRun(null)}
+      >
+        <View style={styles.viewerBackdrop}>
+          <Pressable style={styles.viewerClose} onPress={() => setSelectedRun(null)}>
+            <Text style={styles.viewerCloseText}>Close</Text>
+          </Pressable>
+
+          {selectedRun?.image ? (
+            <Image source={{ uri: selectedRun.image }} style={styles.viewerImage} resizeMode="contain" />
+          ) : null}
+
+          <View style={styles.viewerMeta}>
+            <Text style={styles.viewerMetaTitle}>{selectedRun?.distance || '--'} km</Text>
+            <Text style={styles.viewerMetaText}>
+              {selectedRun?.duration || '--'} • {selectedRun ? formatDateTime(selectedRun.createdAt) : '--'}
+            </Text>
+            <View style={styles.viewerMetaRow}>
+              <ViewerChip icon="speedometer-outline" label={`${selectedRun?.pace || '--'}/km`} />
+              <ViewerChip
+                icon="flash-outline"
+                label={
+                  Number.isFinite(selectedRun?.speed) && selectedRun.speed > 0
+                    ? `${selectedRun.speed.toFixed(1)} km/h`
+                    : '--'
+                }
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <BottomTab navigation={navigation} uid={uid} active="History" />
     </SafeAreaView>
@@ -154,7 +264,29 @@ function SummaryChip({ label, value }) {
   );
 }
 
-function RunCard({ distance, duration, pace, steps, calories, image, createdAt }) {
+function HighlightCard({ icon, label, value }) {
+  return (
+    <View style={styles.highlightCard}>
+      <View style={styles.highlightIcon}>
+        <Ionicons name={icon} size={16} color={palette.accent} />
+      </View>
+      <Text style={styles.highlightLabel}>{label}</Text>
+      <Text style={styles.highlightValue}>{value}</Text>
+    </View>
+  );
+}
+
+function RunCard({
+  distance,
+  duration,
+  pace,
+  steps,
+  calories,
+  averageSpeedKmh,
+  image,
+  createdAt,
+  onPressImage,
+}) {
   return (
     <View style={styles.runCard}>
       <View style={styles.runHeader}>
@@ -172,9 +304,25 @@ function RunCard({ distance, duration, pace, steps, calories, image, createdAt }
 
       <View style={styles.runMetaRow}>
         <MetaItem label="Calories" value={calories > 0 ? `${calories} kcal` : '--'} />
+        <MetaItem
+          label="Avg Speed"
+          value={averageSpeedKmh > 0 ? `${averageSpeedKmh.toFixed(1)} km/h` : '--'}
+        />
       </View>
 
-      {image ? <Image source={{ uri: image }} style={styles.routeImage} /> : null}
+      {image ? (
+        <Pressable style={styles.routeImageWrap} onPress={onPressImage}>
+          <Image source={{ uri: image }} style={styles.routeImage} />
+          <View style={styles.routeImageHint}>
+            <Text style={styles.routeImageHintText}>Tap to expand</Text>
+          </View>
+        </Pressable>
+      ) : (
+        <View style={styles.routePlaceholder}>
+          <Ionicons name="image-outline" size={18} color={palette.textMuted} />
+          <Text style={styles.routePlaceholderText}>Route preview unavailable for this run.</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -184,6 +332,15 @@ function MetaItem({ label, value }) {
     <View style={styles.metaItem}>
       <Text style={styles.metaLabel}>{label}</Text>
       <Text style={styles.metaValue}>{value}</Text>
+    </View>
+  );
+}
+
+function ViewerChip({ icon, label }) {
+  return (
+    <View style={styles.viewerChip}>
+      <Ionicons name={icon} size={14} color={palette.textSecondary} />
+      <Text style={styles.viewerChipText}>{label}</Text>
     </View>
   );
 }
@@ -213,12 +370,44 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 12,
   },
+  highlightRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
   summaryChip: {
     flex: 1,
     ...surfaces.card,
     paddingVertical: 10,
     paddingHorizontal: 10,
     ...shadows.light,
+  },
+  highlightCard: {
+    flex: 1,
+    ...surfaces.cardStrong,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    ...shadows.light,
+  },
+  highlightIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(249,115,22,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  highlightLabel: {
+    color: palette.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  highlightValue: {
+    color: palette.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 5,
   },
   summaryLabel: {
     color: palette.textMuted,
@@ -243,17 +432,32 @@ const styles = StyleSheet.create({
     ...surfaces.card,
     alignItems: 'center',
     paddingVertical: 26,
+    paddingHorizontal: 18,
     ...shadows.light,
   },
   emptyTitle: {
     color: palette.textPrimary,
     fontSize: 18,
     fontWeight: '700',
+    marginTop: 10,
   },
   emptySub: {
     marginTop: 4,
     color: palette.textMuted,
     fontSize: 13,
+    textAlign: 'center',
+  },
+  emptyAction: {
+    marginTop: 14,
+    borderRadius: radii.pill,
+    backgroundColor: 'rgba(249,115,22,0.16)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  emptyActionText: {
+    color: '#fdba74',
+    fontSize: 12,
+    fontWeight: '700',
   },
   runCard: {
     ...surfaces.cardStrong,
@@ -304,8 +508,106 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   routeImage: {
+    width: '100%',
     height: 148,
     borderRadius: radii.md,
+    marginTop: 0,
+  },
+  routeImageWrap: {
     marginTop: 6,
+  },
+  routeImageHint: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    borderRadius: radii.pill,
+    backgroundColor: 'rgba(6,11,20,0.78)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  routeImageHintText: {
+    color: palette.textPrimary,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  routePlaceholder: {
+    marginTop: 6,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.14)',
+    backgroundColor: 'rgba(15,23,42,0.58)',
+    paddingVertical: 18,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    gap: 8,
+  },
+  routePlaceholderText: {
+    color: palette.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  viewerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2,6,12,0.96)',
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingTop: spacing.screenTop + 16,
+    paddingBottom: 24,
+    justifyContent: 'center',
+  },
+  viewerClose: {
+    position: 'absolute',
+    top: spacing.screenTop + 8,
+    right: spacing.screenHorizontal,
+    zIndex: 2,
+    borderRadius: radii.pill,
+    backgroundColor: 'rgba(15,23,42,0.92)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  viewerCloseText: {
+    color: palette.textPrimary,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  viewerImage: {
+    width: '100%',
+    height: '72%',
+    borderRadius: radii.lg,
+  },
+  viewerMeta: {
+    marginTop: 16,
+    alignItems: 'center',
+  },
+  viewerMetaTitle: {
+    color: palette.textPrimary,
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  viewerMetaText: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    marginTop: 6,
+    textAlign: 'center',
+  },
+  viewerMetaRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  viewerChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(13,22,39,0.88)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  viewerChipText: {
+    color: palette.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

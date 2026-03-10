@@ -6,6 +6,7 @@ import {
   Pressable,
   ActivityIndicator,
   ScrollView,
+  RefreshControl,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -41,6 +42,15 @@ const formatPace = secondsPerKm => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+const formatDuration = seconds => {
+  const total = Math.max(0, Math.round(toNumber(seconds)));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m} min`;
+};
+
 const getGreeting = () => {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
@@ -63,12 +73,22 @@ export default function DashBoard({ route, navigation }) {
   });
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState('');
+  const [insights, setInsights] = useState({
+    latestRun: null,
+    bestDistance: 0,
+    activeDays: 0,
+  });
 
-  const loadDashboardData = useCallback(async () => {
+  const loadDashboardData = useCallback(async ({ silent = false } = {}) => {
     if (!uid) return;
 
-    setLoading(true);
+    if (silent) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setErrorText('');
 
     try {
@@ -121,6 +141,31 @@ export default function DashBoard({ route, navigation }) {
         goalKm,
       });
 
+      const activeDays = new Set(
+        runList
+          .map(run => {
+            const createdAt = toNumber(run.createdAt);
+            if (!createdAt) return null;
+            const current = new Date(createdAt);
+            current.setHours(0, 0, 0, 0);
+            return current.getTime();
+          })
+          .filter(Boolean)
+      ).size;
+
+      const sortedRuns = [...runList].sort((a, b) => toNumber(b.createdAt) - toNumber(a.createdAt));
+      const latestRun = sortedRuns[0] || null;
+      const bestDistance = runList.reduce(
+        (currentBest, run) => Math.max(currentBest, toNumber(run.distance)),
+        0
+      );
+
+      setInsights({
+        latestRun,
+        bestDistance: Number(bestDistance.toFixed(2)),
+        activeDays,
+      });
+
       const ranking = Object.entries(usersData)
         .map(([id, data]) => {
           const runnerRuns = data?.runs ? Object.values(data.runs) : [];
@@ -142,6 +187,7 @@ export default function DashBoard({ route, navigation }) {
       setErrorText('Unable to load dashboard data.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [uid]);
 
@@ -182,11 +228,18 @@ export default function DashBoard({ route, navigation }) {
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => loadDashboardData({ silent: true })}
+            tintColor={palette.accent}
+          />
+        }
       >
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>{greeting}</Text>
-            <Text style={styles.name}>{user?.username || 'Runner'}, lets train.</Text>
+            <Text style={styles.name}>{user?.username || 'Runner'}, let's train.</Text>
           </View>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>{avatarLabel}</Text>
@@ -219,9 +272,44 @@ export default function DashBoard({ route, navigation }) {
             <Text style={styles.sectionTitle}>Today Stats</Text>
             <View style={styles.statsRow}>
               <StatBox title="Distance" value={`${todayStats.distance.toFixed(2)} km`} />
-              <StatBox title="Duration" value={`${Math.round(todayStats.seconds / 60)} min`} />
+              <StatBox title="Duration" value={formatDuration(todayStats.seconds)} />
               <StatBox title="Pace" value={`${todayStats.pace}/km`} />
             </View>
+
+            <Text style={styles.sectionTitle}>Session Insight</Text>
+            {insights.latestRun ? (
+              <View style={styles.insightCard}>
+                <View>
+                  <Text style={styles.insightKicker}>Latest Run</Text>
+                  <Text style={styles.insightTitle}>{toNumber(insights.latestRun.distance).toFixed(2)} km session</Text>
+                  <Text style={styles.insightText}>
+                    {formatDuration(insights.latestRun.time)} total time at {insights.latestRun.pace || '--'}/km
+                  </Text>
+                </View>
+                <Pressable
+                  style={styles.inlineAction}
+                  onPress={() => navigation.navigate('History', { uid })}
+                >
+                  <Text style={styles.inlineActionText}>Open History</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable
+                style={styles.insightCard}
+                onPress={() => navigation.navigate('Run', { uid })}
+              >
+                <View>
+                  <Text style={styles.insightKicker}>First Session</Text>
+                  <Text style={styles.insightTitle}>No runs recorded yet</Text>
+                  <Text style={styles.insightText}>
+                    Start your first session to unlock pace trends, route history, and records.
+                  </Text>
+                </View>
+                <View style={styles.startMiniBadge}>
+                  <Ionicons name="arrow-forward" size={16} color={palette.textPrimary} />
+                </View>
+              </Pressable>
+            )}
 
             <Text style={styles.sectionTitle}>Weekly Goal</Text>
             <View style={styles.goalCard}>
@@ -239,6 +327,39 @@ export default function DashBoard({ route, navigation }) {
                   style={[styles.progressFill, { width: `${weeklyProgress}%` }]}
                 />
               </View>
+            </View>
+
+            <Text style={styles.sectionTitle}>Consistency</Text>
+            <View style={styles.consistencyRow}>
+              <InsightBox
+                icon="calendar-outline"
+                title="Active Days"
+                value={`${insights.activeDays}`}
+                subtitle="days with recorded runs"
+              />
+              <InsightBox
+                icon="ribbon-outline"
+                title="Best Distance"
+                value={`${insights.bestDistance.toFixed(2)} km`}
+                subtitle="best single session"
+              />
+            </View>
+
+            <View style={styles.quickActionRow}>
+              <Pressable
+                style={styles.quickAction}
+                onPress={() => navigation.navigate('History', { uid })}
+              >
+                <Ionicons name="time-outline" size={18} color={palette.accent} />
+                <Text style={styles.quickActionText}>Run History</Text>
+              </Pressable>
+              <Pressable
+                style={styles.quickAction}
+                onPress={() => navigation.navigate('Profile', { uid })}
+              >
+                <Ionicons name="person-outline" size={18} color={palette.accent} />
+                <Text style={styles.quickActionText}>Profile</Text>
+              </Pressable>
             </View>
 
             <Text style={styles.sectionTitle}>Leaderboard</Text>
@@ -285,6 +406,19 @@ function RankCard({ rank, name, km, highlight }) {
         <Text style={styles.rankName} numberOfLines={1}>{name}</Text>
         <Text style={styles.rankKm}>{km.toFixed(2)} km total</Text>
       </View>
+    </View>
+  );
+}
+
+function InsightBox({ icon, title, value, subtitle }) {
+  return (
+    <View style={styles.insightBox}>
+      <View style={styles.insightBoxIcon}>
+        <Ionicons name={icon} size={16} color={palette.accent} />
+      </View>
+      <Text style={styles.insightBoxTitle}>{title}</Text>
+      <Text style={styles.insightBoxValue}>{value}</Text>
+      <Text style={styles.insightBoxSubtitle}>{subtitle}</Text>
     </View>
   );
 }
@@ -396,6 +530,55 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: spacing.sectionGap,
   },
+  insightCard: {
+    ...surfaces.cardStrong,
+    padding: 14,
+    marginBottom: spacing.sectionGap,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    ...shadows.light,
+  },
+  insightKicker: {
+    color: '#fdba74',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  insightTitle: {
+    color: palette.textPrimary,
+    fontSize: 17,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  insightText: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+    maxWidth: 220,
+  },
+  inlineAction: {
+    borderRadius: radii.pill,
+    backgroundColor: 'rgba(249,115,22,0.16)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  inlineActionText: {
+    color: '#fdba74',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  startMiniBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(249,115,22,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   statBox: {
     flex: 1,
     ...surfaces.card,
@@ -445,6 +628,65 @@ const styles = StyleSheet.create({
   progressFill: {
     height: 8,
     borderRadius: 999,
+  },
+  consistencyRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  insightBox: {
+    flex: 1,
+    ...surfaces.card,
+    padding: 14,
+    ...shadows.light,
+  },
+  insightBoxIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(249,115,22,0.14)',
+    marginBottom: 10,
+  },
+  insightBoxTitle: {
+    color: palette.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  insightBoxValue: {
+    color: palette.textPrimary,
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 6,
+  },
+  insightBoxSubtitle: {
+    color: palette.textSecondary,
+    fontSize: 11,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  quickActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: spacing.sectionGap,
+  },
+  quickAction: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(13,22,39,0.82)',
+    paddingVertical: 12,
+  },
+  quickActionText: {
+    color: palette.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
   },
   rankList: {
     gap: 8,

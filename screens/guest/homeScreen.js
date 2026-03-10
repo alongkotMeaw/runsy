@@ -36,6 +36,18 @@ export default function Home({ navigation }) {
             experience.
           </Text>
 
+          <View style={styles.featureRow}>
+            <FeaturePill label="Background GPS" />
+            <FeaturePill label="Route History" />
+            <FeaturePill label="Personal Records" />
+          </View>
+
+          <View style={styles.statsRow}>
+            <StatPill value="Live" label="tracking" />
+            <StatPill value="Goal" label="progress" />
+            <StatPill value="Pro" label="profile" />
+          </View>
+
           <View style={styles.actions}>
             <Pressable style={styles.primaryButton} onPress={() => navigation.navigate('Register')}>
               <LinearGradient
@@ -55,6 +67,23 @@ export default function Home({ navigation }) {
         </View>
       </ImageBackground>
     </SafeAreaView>
+  );
+}
+
+function FeaturePill({ label }) {
+  return (
+    <View style={styles.featurePill}>
+      <Text style={styles.featurePillText}>{label}</Text>
+    </View>
+  );
+}
+
+function StatPill({ value, label }) {
+  return (
+    <View style={styles.statPill}>
+      <Text style={styles.statPillValue}>{value}</Text>
+      <Text style={styles.statPillLabel}>{label}</Text>
+    </View>
   );
 }
 
@@ -92,6 +121,51 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     maxWidth: '95%',
+  },
+  featureRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  featurePill: {
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(6,11,20,0.4)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  featurePillText: {
+    color: palette.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  statPill: {
+    flex: 1,
+    borderRadius: radii.md,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(6,11,20,0.56)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  statPillValue: {
+    color: '#fde68a',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  statPillLabel: {
+    color: palette.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
   },
   actions: {
     marginTop: 14,

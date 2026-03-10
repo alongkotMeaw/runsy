@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
   Alert,
+  AppState,
   Platform,
   Animated,
   Easing,
@@ -33,6 +35,7 @@ import {
   radii,
   shadows,
   spacing,
+  surfaces,
   typography,
 } from '../../theme/premiumTheme';
 
@@ -121,6 +124,7 @@ export default function RunScreen({ navigation, route }) {
   const runStartedTimestampRef = useRef(null);
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
+  const appStateRef = useRef(AppState.currentState);
   const pulseAnim = useRef(new Animated.Value(0)).current;
 
   let mapModule = null;
@@ -148,6 +152,7 @@ export default function RunScreen({ navigation, route }) {
   const cadenceSpm = seconds > 0 ? Math.round((totalSteps / seconds) * 60) : 0;
   const calories = Math.max(0, Math.round(distance * userWeightKg * KCAL_PER_KM_PER_KG));
   const isLiveMode = isRunning && !isBusy;
+  const isSessionExpanded = isRunning || isBusy;
 
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
@@ -294,9 +299,17 @@ export default function RunScreen({ navigation, route }) {
       if (!mounted || !session?.active) return;
 
       setIsRunning(true);
-      await syncTrackingSessionToUi();
+      const syncedSession = await syncTrackingSessionToUi();
       startTimer();
       await startStepTracking();
+
+      const routeCoords = Array.isArray(syncedSession?.coords) ? syncedSession.coords : [];
+      const currentPoint = syncedSession?.currentPoint || routeCoords[routeCoords.length - 1] || null;
+      if (routeCoords.length > 1) {
+        await fitMapToRoute(routeCoords, currentPoint);
+      } else if (currentPoint) {
+        focusMapOnPoint(currentPoint, 0);
+      }
     };
 
     restoreRunningSession();
@@ -326,6 +339,33 @@ export default function RunScreen({ navigation, route }) {
         syncRef.current = null;
       }
     };
+  }, [isRunning, syncTrackingSessionToUi]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      const wasBackground =
+        appStateRef.current === 'background' || appStateRef.current === 'inactive';
+      appStateRef.current = nextState;
+
+      if (wasBackground && nextState === 'active' && isRunning) {
+        (async () => {
+          const session = await syncTrackingSessionToUi();
+          const routeCoords = Array.isArray(session?.coords) ? session.coords : [];
+          const currentPoint = session?.currentPoint || routeCoords[routeCoords.length - 1] || null;
+
+          if (routeCoords.length > 1) {
+            await fitMapToRoute(routeCoords, currentPoint);
+            return;
+          }
+
+          if (currentPoint) {
+            focusMapOnPoint(currentPoint, 450);
+          }
+        })();
+      }
+    });
+
+    return () => subscription.remove();
   }, [isRunning, syncTrackingSessionToUi]);
 
   const focusMapOnPoint = (point, duration = 600) => {
@@ -612,7 +652,7 @@ export default function RunScreen({ navigation, route }) {
   const statusText = isBusy
     ? 'Preparing session...'
     : isRunning
-      ? 'Live + background tracking'
+      ? 'Live tracking active'
       : hasLocationPermission === false
         ? 'Location permission required'
         : 'Ready to run';
@@ -622,6 +662,29 @@ export default function RunScreen({ navigation, route }) {
     : isRunning
       ? 'STOP & SAVE'
       : 'START RUN';
+  const locationReadyText = hasLocationPermission === true
+    ? 'Background-ready'
+    : hasLocationPermission === false
+      ? 'Permission needed'
+      : 'Will request on start';
+  const stepReadyText = stepSensorAvailable === true
+    ? hasStepPermission === true
+      ? 'Sensor ready'
+      : 'Permission needed'
+    : stepSensorAvailable === false
+      ? 'Estimated from distance'
+      : 'Will check on start';
+  const mapReadyText = MAP_ENABLED && MapView
+    ? 'Preview available'
+    : 'Map key/build missing';
+  const mapPanelTitle = isLiveMode ? 'LIVE ROUTE' : 'ROUTE PREVIEW';
+  const mapPanelStatus = !MAP_ENABLED || !MapView
+    ? 'Map unavailable'
+    : isLiveMode
+      ? coords.length > 1
+        ? `${coords.length} points tracked`
+        : 'Waiting for first GPS point'
+      : 'Ready when you start';
 
   const mapMessage = !MAP_ENABLED
     ? 'Add EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env and rebuild to enable map.'
@@ -637,9 +700,9 @@ export default function RunScreen({ navigation, route }) {
   });
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, isSessionExpanded && styles.containerExpanded]}>
       <LinearGradient
-        colors={isLiveMode ? gradients.successButton : gradients.appBackground}
+        colors={gradients.appBackground}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
@@ -656,7 +719,12 @@ export default function RunScreen({ navigation, route }) {
         </View>
       </View>
 
-      <View style={[styles.heroCard, isLiveMode && styles.heroCardLive]}>
+      <LinearGradient
+        colors={gradients.hero}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[styles.heroCard, isLiveMode && styles.heroCardLive]}
+      >
         <View style={styles.heroTopRow}>
           {isLiveMode ? (
             <View style={styles.liveBadge}>
@@ -676,7 +744,7 @@ export default function RunScreen({ navigation, route }) {
           ) : (
             <Text style={styles.preRunHint}>Tap start to begin your run</Text>
           )}
-          {isLiveMode ? <Text style={styles.heroHint}>Background on</Text> : null}
+          {isLiveMode ? <Text style={styles.heroHint}>GPS active</Text> : null}
         </View>
 
         <Text style={styles.time}>{formatClock(seconds)}</Text>
@@ -685,22 +753,73 @@ export default function RunScreen({ navigation, route }) {
           <Stat value={pace} label="Pace (/km)" />
           <Stat value={formatNumber(displaySpeedKmh, 1)} label="Speed" />
         </View>
-      </View>
+      </LinearGradient>
 
       <View style={styles.metricsRow}>
-        <MiniStat label={usingSensorSteps ? 'Steps' : 'Est. Steps'} value={totalSteps.toLocaleString()} />
-        <MiniStat label="Cadence" value={`${cadenceSpm} spm`} />
-        <MiniStat label="Calories" value={`${calories} kcal`} />
-        <MiniStat label="Elev Gain" value={`${Math.round(elevationGainM)} m`} />
+        <MiniStat
+          label={usingSensorSteps ? 'Steps' : 'Est. Steps'}
+          value={totalSteps.toLocaleString()}
+          icon="walk-outline"
+          tintColor="#34d399"
+        />
+        <MiniStat
+          label="Cadence"
+          value={`${cadenceSpm} spm`}
+          icon="timer-outline"
+          tintColor="#38bdf8"
+        />
+        <MiniStat
+          label="Calories"
+          value={`${calories} kcal`}
+          icon="flame-outline"
+          tintColor="#fb7185"
+        />
+        <MiniStat
+          label="Elev Gain"
+          value={`${Math.round(elevationGainM)} m`}
+          icon="trending-up-outline"
+          tintColor="#f59e0b"
+        />
       </View>
 
-      {isLiveMode ? (
-        <Text style={styles.bgTrackingNote}>
-          Tracking keeps running in background. Check the Android notification for live distance.
-        </Text>
+      {!isSessionExpanded ? (
+        <View style={styles.readinessCard}>
+          <View style={styles.readinessHeader}>
+            <Text style={styles.readinessTitle}>Session Readiness</Text>
+            <Text style={styles.readinessSubtitle}>Everything checked before you head out.</Text>
+          </View>
+          <View style={styles.readinessRow}>
+            <ReadinessItem
+              icon="locate-outline"
+              label="Background GPS"
+              value={locationReadyText}
+              tone={hasLocationPermission === true ? 'success' : hasLocationPermission === false ? 'danger' : 'default'}
+            />
+            <ReadinessItem
+              icon="walk-outline"
+              label="Step Tracking"
+              value={stepReadyText}
+              tone={stepSensorAvailable === true && hasStepPermission === true ? 'success' : 'default'}
+            />
+            <ReadinessItem
+              icon="map-outline"
+              label="Map Preview"
+              value={mapReadyText}
+              tone={MAP_ENABLED && MapView ? 'success' : 'default'}
+            />
+          </View>
+        </View>
       ) : null}
 
-      <View style={[styles.mapCard, isLiveMode && styles.mapCardLive]} ref={mapCaptureRef} collapsable={false}>
+      <View
+        style={[
+          styles.mapCard,
+          isLiveMode && styles.mapCardLive,
+          isSessionExpanded && styles.mapCardExpanded,
+        ]}
+        ref={mapCaptureRef}
+        collapsable={false}
+      >
         {MAP_ENABLED && MapView ? (
           <MapView
             ref={mapViewRef}
@@ -728,6 +847,23 @@ export default function RunScreen({ navigation, route }) {
             <Text style={styles.mapPlaceholderText}>{mapMessage}</Text>
           </View>
         )}
+
+        <View pointerEvents="none" style={styles.mapOverlay}>
+          <LinearGradient
+            colors={['rgba(6,11,20,0.84)', 'rgba(6,11,20,0.34)', 'transparent']}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={styles.mapOverlayFade}
+          />
+          <View style={styles.mapOverlayRow}>
+            <View style={[styles.mapOverlayBadge, isLiveMode && styles.mapOverlayBadgeLive]}>
+              <Text style={styles.mapOverlayBadgeText}>{mapPanelTitle}</Text>
+            </View>
+            <View style={styles.mapOverlayInfo}>
+              <Text style={styles.mapOverlayInfoText}>{mapPanelStatus}</Text>
+            </View>
+          </View>
+        </View>
       </View>
 
       <Pressable
@@ -735,12 +871,13 @@ export default function RunScreen({ navigation, route }) {
           styles.actionButton,
           isBusy && styles.actionButtonDisabled,
           isLiveMode && styles.actionButtonLive,
+          isSessionExpanded && styles.actionButtonExpanded,
         ]}
         onPress={isRunning ? stopRun : startRun}
         disabled={isBusy}
       >
         <LinearGradient
-          colors={isRunning ? gradients.dangerButton : gradients.successButton}
+          colors={isRunning ? gradients.dangerButton : gradients.accentButton}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
           style={styles.actionButtonGradient}
@@ -749,7 +886,7 @@ export default function RunScreen({ navigation, route }) {
         </LinearGradient>
       </Pressable>
 
-      <BottomTab navigation={navigation} uid={uid} active="Run" />
+      {!isSessionExpanded ? <BottomTab navigation={navigation} uid={uid} active="Run" /> : null}
     </SafeAreaView>
   );
 }
@@ -763,11 +900,35 @@ function Stat({ value, label }) {
   );
 }
 
-function MiniStat({ value, label }) {
+function MiniStat({ value, label, icon, tintColor }) {
   return (
     <View style={styles.miniStatCard}>
+      <View style={styles.miniStatTop}>
+        <View style={[styles.miniStatIconWrap, { backgroundColor: `${tintColor}22` }]}>
+          <Ionicons name={icon} size={16} color={tintColor} />
+        </View>
+        <Text style={styles.miniStatLabel}>{label}</Text>
+      </View>
       <Text style={styles.miniStatValue}>{value}</Text>
-      <Text style={styles.miniStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ReadinessItem({ icon, label, value, tone = 'default' }) {
+  const toneStyle = [
+    styles.readinessDot,
+    tone === 'success' ? styles.readinessDotSuccess : null,
+    tone === 'danger' ? styles.readinessDotDanger : null,
+  ];
+
+  return (
+    <View style={styles.readinessItem}>
+      <View style={styles.readinessIconWrap}>
+        <Ionicons name={icon} size={16} color={palette.accent} />
+      </View>
+      <View style={toneStyle} />
+      <Text style={styles.readinessItemLabel}>{label}</Text>
+      <Text style={styles.readinessItemValue}>{value}</Text>
     </View>
   );
 }
@@ -780,75 +941,77 @@ const styles = StyleSheet.create({
     paddingTop: spacing.screenTop,
     paddingBottom: 92,
   },
+  containerExpanded: {
+    paddingBottom: 16,
+  },
   glowA: {
     position: 'absolute',
     width: 220,
     height: 220,
     borderRadius: 110,
-    backgroundColor: 'rgba(34,197,94,0.18)',
-    top: -60,
+    backgroundColor: 'rgba(34,197,94,0.14)',
+    top: -72,
     right: -40,
   },
   glowAlive: {
-    backgroundColor: 'rgba(34,197,94,0.26)',
-    top: -50,
-    right: -25,
+    backgroundColor: 'rgba(34,197,94,0.18)',
+    top: -68,
+    right: -28,
   },
   glowB: {
     position: 'absolute',
     width: 180,
     height: 180,
     borderRadius: 90,
-    backgroundColor: 'rgba(249,115,22,0.16)',
+    backgroundColor: 'rgba(249,115,22,0.14)',
     bottom: 120,
     left: -50,
   },
   glowBLive: {
-    backgroundColor: 'rgba(14,165,233,0.14)',
-    bottom: 130,
+    backgroundColor: 'rgba(249,115,22,0.16)',
+    bottom: 128,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   header: {
-    ...typography.section,
-    fontSize: 22,
+    ...typography.title,
+    fontSize: 28,
   },
   statusChip: {
-    backgroundColor: 'rgba(15,23,42,0.75)',
+    backgroundColor: 'rgba(13,22,39,0.82)',
     borderWidth: 1,
     borderColor: palette.borderSoft,
     borderRadius: radii.pill,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   statusChipLive: {
-    backgroundColor: 'rgba(22,163,74,0.22)',
-    borderColor: 'rgba(134,239,172,0.55)',
+    backgroundColor: 'rgba(13,22,39,0.88)',
+    borderColor: 'rgba(74,222,128,0.26)',
   },
   statusChipText: {
     color: palette.textSecondary,
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   statusChipTextLive: {
-    color: '#dcfce7',
+    color: palette.textPrimary,
   },
   heroCard: {
-    backgroundColor: 'rgba(15,23,42,0.75)',
     borderRadius: radii.lg,
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: palette.borderSoft,
+    overflow: 'hidden',
     ...shadows.light,
   },
   heroCardLive: {
-    backgroundColor: 'rgba(15,23,42,0.85)',
-    borderColor: 'rgba(74,222,128,0.45)',
+    borderColor: 'rgba(74,222,128,0.3)',
   },
   heroTopRow: {
     flexDirection: 'row',
@@ -857,21 +1020,22 @@ const styles = StyleSheet.create({
     minHeight: 24,
   },
   preRunHint: {
-    color: palette.textMuted,
+    color: palette.textSecondary,
     fontSize: 12,
   },
   heroHint: {
-    color: '#bbf7d0',
+    color: palette.textSecondary,
     fontSize: 11,
     fontWeight: '700',
+    letterSpacing: 0.4,
   },
   liveBadge: {
     borderRadius: radii.pill,
     paddingHorizontal: 12,
     paddingVertical: 5,
-    backgroundColor: 'rgba(22,163,74,0.24)',
+    backgroundColor: 'rgba(13,22,39,0.78)',
     borderWidth: 1,
-    borderColor: 'rgba(134,239,172,0.65)',
+    borderColor: 'rgba(74,222,128,0.28)',
     flexDirection: 'row',
     alignItems: 'center',
     overflow: 'hidden',
@@ -892,7 +1056,7 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   liveBadgeText: {
-    color: '#dcfce7',
+    color: palette.textPrimary,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.45,
@@ -928,46 +1092,182 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    marginTop: 12,
-    marginBottom: 10,
-    rowGap: 8,
+    marginTop: 14,
+    marginBottom: 14,
+    rowGap: 10,
   },
   miniStatCard: {
-    width: '48.5%',
-    backgroundColor: 'rgba(15,23,42,0.7)',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: palette.borderSoft,
-    paddingVertical: 10,
+    width: '48.6%',
+    minHeight: 88,
+    justifyContent: 'space-between',
+    ...surfaces.card,
+    paddingVertical: 12,
     paddingHorizontal: 12,
+    ...shadows.light,
+  },
+  miniStatTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  miniStatIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginRight: 8,
   },
   miniStatValue: {
     color: palette.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 12,
   },
   miniStatLabel: {
     color: palette.textMuted,
-    fontSize: 11,
-    marginTop: 2,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+    flex: 1,
   },
-  bgTrackingNote: {
-    color: '#d1fae5',
-    fontSize: 11,
+  readinessCard: {
+    ...surfaces.cardStrong,
+    borderRadius: radii.lg,
+    padding: 14,
+    marginBottom: 14,
+    ...shadows.light,
+  },
+  readinessHeader: {
+    marginBottom: 12,
+  },
+  readinessTitle: {
+    color: palette.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  readinessSubtitle: {
+    color: palette.textSecondary,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  readinessRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  readinessItem: {
+    flex: 1,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.16)',
+    backgroundColor: 'rgba(15,23,42,0.68)',
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  readinessIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(249,115,22,0.14)',
     marginBottom: 10,
+  },
+  readinessDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: palette.textMuted,
+    marginBottom: 8,
+  },
+  readinessDotSuccess: {
+    backgroundColor: palette.success,
+  },
+  readinessDotDanger: {
+    backgroundColor: palette.danger,
+  },
+  readinessItemLabel: {
+    color: palette.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  readinessItemValue: {
+    color: palette.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 6,
+    lineHeight: 16,
   },
   mapCard: {
     flex: 1,
+    minHeight: 250,
     borderRadius: radii.lg,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: palette.borderSoft,
     backgroundColor: palette.bgDeep,
     ...shadows.light,
-    marginBottom: 14,
+    marginBottom: 16,
   },
   mapCardLive: {
-    borderColor: 'rgba(74,222,128,0.48)',
+    borderColor: 'rgba(74,222,128,0.26)',
+  },
+  mapCardExpanded: {
+    minHeight: 360,
+  },
+  mapOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    padding: 12,
+    zIndex: 1,
+  },
+  mapOverlayFade: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 88,
+  },
+  mapOverlayRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  mapOverlayBadge: {
+    backgroundColor: 'rgba(8,17,32,0.8)',
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+  },
+  mapOverlayBadgeLive: {
+    backgroundColor: 'rgba(8,17,32,0.82)',
+    borderColor: 'rgba(74,222,128,0.26)',
+  },
+  mapOverlayBadgeText: {
+    color: palette.textPrimary,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.75,
+  },
+  mapOverlayInfo: {
+    maxWidth: '58%',
+    backgroundColor: 'rgba(8,17,32,0.72)',
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.16)',
+  },
+  mapOverlayInfoText: {
+    color: palette.textSecondary,
+    fontSize: 10,
+    fontWeight: '600',
   },
   mapPlaceholder: {
     flex: 1,
@@ -991,9 +1291,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     ...shadows.light,
   },
+  actionButtonExpanded: {
+    marginBottom: 0,
+  },
   actionButtonLive: {
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.35,
+    shadowColor: '#ef4444',
+    shadowOpacity: 0.24,
     shadowRadius: 12,
   },
   actionButtonGradient: {
