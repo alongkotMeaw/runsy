@@ -25,6 +25,7 @@
     },
     "owner": "alono16",
     "plugins": [
+      "expo-router",
       "@react-native-community/datetimepicker",
       [
         "expo-location",
