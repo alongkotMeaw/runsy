@@ -257,10 +257,11 @@ export const requestRunTrackingPermissions = async () => {
     return { foregroundGranted: true, backgroundGranted: true };
   }
 
-  const background = await Location.requestBackgroundPermissionsAsync();
+  // Android foreground-service tracking can start with foreground location only.
+  const background = await Location.getBackgroundPermissionsAsync().catch(() => null);
   return {
     foregroundGranted: true,
-    backgroundGranted: background.status === 'granted',
+    backgroundGranted: background?.status === 'granted',
   };
 };
 

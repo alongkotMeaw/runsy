@@ -8,13 +8,13 @@ import {
   Alert,
   AppState,
   Platform,
-  Animated,
-  Easing,
   ScrollView,
   useWindowDimensions,
 } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -104,6 +104,7 @@ const SESSION_SYNC_MS = 1100;
 export default function RunScreen({ navigation, route }) {
   const uid = route?.params?.uid || auth.currentUser?.uid;
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
   const { height: windowHeight } = useWindowDimensions();
 
   const [location, setLocation] = useState(null);
@@ -129,7 +130,6 @@ export default function RunScreen({ navigation, route }) {
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
-  const pulseAnim = useRef(new Animated.Value(0)).current;
 
   let mapModule = null;
   if (MAP_ENABLED) {
@@ -161,12 +161,9 @@ export default function RunScreen({ navigation, route }) {
   const isShortScreen = windowHeight < 740;
   const bottomTabPadding = Math.max(8, insets.bottom + 2);
   const bottomTabHeight = 64 + bottomTabPadding;
-  const actionDockBottom = bottomTabHeight + (isShortScreen ? 14 : 18);
-  const scrollBottomPadding = actionDockBottom + 84;
-  const liveActionDockBottom = Math.max(14, insets.bottom + 10);
-  const liveContentBottomPadding = liveActionDockBottom + 74;
   const preRunMapMinHeight = isShortScreen ? 172 : isCompactScreen ? 196 : 250;
   const liveMapMinHeight = isShortScreen ? 280 : isCompactScreen ? 320 : 360;
+  const shouldKeepScreenAwake = isFocused && (isRunning || isBusy);
 
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
@@ -228,32 +225,19 @@ export default function RunScreen({ navigation, route }) {
   }, []);
 
   useEffect(() => {
-    if (!isRunning) {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(0);
+    const keepAwakeTag = 'runsy-run-session';
+
+    if (!shouldKeepScreenAwake) {
+      deactivateKeepAwake(keepAwakeTag).catch(() => {});
       return;
     }
 
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 0,
-          duration: 900,
-          easing: Easing.in(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
+    activateKeepAwakeAsync(keepAwakeTag).catch(() => {});
 
-    loop.start();
-    return () => loop.stop();
-  }, [isRunning, pulseAnim]);
+    return () => {
+      deactivateKeepAwake(keepAwakeTag).catch(() => {});
+    };
+  }, [shouldKeepScreenAwake]);
 
   const getElapsedSeconds = () => {
     if (!runStartedAtRef.current) return 0;
@@ -424,18 +408,10 @@ export default function RunScreen({ navigation, route }) {
         return false;
       }
 
-      if (Platform.OS === 'android' && !permission.backgroundGranted) {
-        Alert.alert(
-          'Background location required',
-          'Please allow "All the time" location permission so tracking keeps running with screen off or other apps.'
-        );
-        return false;
-      }
-
       return true;
     } catch (error) {
       setHasLocationPermission(false);
-      Alert.alert('Error', 'Unable to request location permission');
+      Alert.alert('Error', error?.message || 'Unable to request location permission');
       return false;
     }
   };
@@ -689,15 +665,6 @@ export default function RunScreen({ navigation, route }) {
     ? 'Add EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env and rebuild to enable map.'
     : 'react-native-maps is unavailable in this build.';
 
-  const liveDotScale = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.32],
-  });
-  const liveDotOpacity = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.85, 0.28],
-  });
-
   const actionButtonNode = (
     <Pressable
       style={[
@@ -744,27 +711,11 @@ export default function RunScreen({ navigation, route }) {
           isCompactScreen && styles.heroCardCompact,
         ]}
       >
-        <View style={styles.heroTopRow}>
-          {isLiveMode ? (
-            <View style={styles.liveBadge}>
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.liveDotPulse,
-                  {
-                    opacity: liveDotOpacity,
-                    transform: [{ scale: liveDotScale }],
-                  },
-                ]}
-              />
-              <View style={styles.liveDotCore} />
-              <Text style={styles.liveBadgeText}>LIVE TRACKING</Text>
-            </View>
-          ) : (
+        {!isLiveMode ? (
+          <View style={styles.heroTopRow}>
             <Text style={styles.preRunHint}>Tap start to begin your run</Text>
-          )}
-          {isLiveMode ? <Text style={styles.heroHint}>GPS active</Text> : null}
-        </View>
+          </View>
+        ) : null}
 
         <Text style={[styles.time, isCompactScreen && styles.timeCompact]}>{formatClock(seconds)}</Text>
         <View style={styles.row}>
@@ -862,6 +813,8 @@ export default function RunScreen({ navigation, route }) {
           </View>
         </View>
       </View>
+
+      <View style={styles.actionButtonInlineWrap}>{actionButtonNode}</View>
     </>
   );
 
@@ -877,25 +830,20 @@ export default function RunScreen({ navigation, route }) {
       <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
 
       {isSessionExpanded ? (
-        <>
-          <View style={[styles.expandedContent, { paddingBottom: liveContentBottomPadding }]}>
-            {screenContent}
-          </View>
-          <View style={[styles.actionDock, { bottom: liveActionDockBottom }]}>
-            {actionButtonNode}
-          </View>
-        </>
+        <ScrollView
+          contentContainerStyle={[styles.scrollContent, styles.expandedScrollContent, { paddingBottom: Math.max(20, insets.bottom + 18) }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {screenContent}
+        </ScrollView>
       ) : (
         <>
           <ScrollView
-            contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollBottomPadding }]}
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomTabHeight + 28 }]}
             showsVerticalScrollIndicator={false}
           >
             {screenContent}
           </ScrollView>
-          <View style={[styles.actionDock, { bottom: actionDockBottom }]}>
-            {actionButtonNode}
-          </View>
           <BottomTab navigation={navigation} uid={uid} active="Run" />
         </>
       )}
@@ -942,6 +890,9 @@ const styles = StyleSheet.create({
   },
   expandedContent: {
     flex: 1,
+  },
+  expandedScrollContent: {
+    flexGrow: 1,
   },
   actionDock: {
     position: 'absolute',
@@ -1030,44 +981,6 @@ const styles = StyleSheet.create({
   preRunHint: {
     color: palette.textSecondary,
     fontSize: 12,
-  },
-  heroHint: {
-    color: palette.textSecondary,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-  },
-  liveBadge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    backgroundColor: 'rgba(13,22,39,0.78)',
-    borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.28)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  liveDotPulse: {
-    position: 'absolute',
-    left: 10,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#86efac',
-  },
-  liveDotCore: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: '#22c55e',
-    marginRight: 6,
-  },
-  liveBadgeText: {
-    color: palette.textPrimary,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.45,
   },
   time: {
     color: palette.textPrimary,
@@ -1257,10 +1170,14 @@ const styles = StyleSheet.create({
     color: palette.textMuted,
     textAlign: 'center',
   },
+  actionButtonInlineWrap: {
+    marginBottom: 4,
+  },
   actionButton: {
     borderRadius: radii.pill,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginTop: 14,
+    marginBottom: 0,
     ...shadows.light,
   },
   actionButtonDocked: {
