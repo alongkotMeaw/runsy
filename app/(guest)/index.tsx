@@ -1,8 +1,10 @@
-﻿import { StatusBar } from 'expo-status-bar';
+// @ts-nocheck
+import { StatusBar } from 'expo-status-bar';
 import { View, Text, StyleSheet, ImageBackground, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { withLegacyRoute } from '../createLegacyRoute';
 import {
   gradients,
   palette,
@@ -13,7 +15,7 @@ import {
   typography,
 } from '../../theme/premiumTheme';
 
-export default function Home({ navigation }) {
+function Home({ navigation }) {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
@@ -57,6 +59,8 @@ export default function Home({ navigation }) {
     </SafeAreaView>
   );
 }
+
+export default withLegacyRoute(Home);
 
 const styles = StyleSheet.create({
   container: {

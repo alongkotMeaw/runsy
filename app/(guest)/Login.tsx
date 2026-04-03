@@ -1,4 +1,5 @@
-﻿import { useState } from 'react';
+// @ts-nocheck
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -17,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { ref, get, query, orderByChild, equalTo } from 'firebase/database';
 
+import { withLegacyRoute } from '../createLegacyRoute';
 import { auth, database, firebaseSetup } from '../../firebaseConfig';
 import {
   gradients,
@@ -58,7 +60,7 @@ const getErrorDetails = error => {
   return message ? `\n\nCode: ${code}\nDetail: ${message}` : `\n\nCode: ${code}`;
 };
 
-export default function LoginScreen({ navigation }) {
+function LoginScreen({ navigation }) {
   const [showPassword, setShowPassword] = useState(false);
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -142,6 +144,12 @@ export default function LoginScreen({ navigation }) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <View style={styles.topBar}>
+            <Pressable style={styles.backButton} onPress={() => navigation.goBack()}>
+              <Ionicons name="chevron-back" size={20} color={palette.textPrimary} />
+            </Pressable>
+          </View>
+
           <View style={styles.headerWrap}>
             <Text style={styles.title}>Welcome Back</Text>
             <Text style={styles.subtitle}>Sign in and continue your running journey.</Text>
@@ -202,9 +210,7 @@ export default function LoginScreen({ navigation }) {
             </Pressable>
 
             <Pressable onPress={() => navigation.navigate('Register')}>
-              <Text style={styles.footerLink}>
-                New here? Create account
-              </Text>
+              <Text style={styles.footerLink}>New here? Create account</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -212,6 +218,8 @@ export default function LoginScreen({ navigation }) {
     </SafeAreaView>
   );
 }
+
+export default withLegacyRoute(LoginScreen);
 
 const styles = StyleSheet.create({
   container: {
@@ -226,6 +234,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.screenHorizontal,
     paddingVertical: 28,
+  },
+  topBar: {
+    marginBottom: 12,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(13,22,39,0.84)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerWrap: {
     marginBottom: 16,

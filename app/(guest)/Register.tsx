@@ -1,4 +1,5 @@
-﻿import { useState } from 'react';
+// @ts-nocheck
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +20,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { withLegacyRoute } from '../createLegacyRoute';
 import { auth, database, firebaseSetup } from '../../firebaseConfig';
 import {
   gradients,
@@ -67,14 +69,15 @@ const getErrorDetails = error => {
   return message ? `\n\nCode: ${code}\nDetail: ${message}` : `\n\nCode: ${code}`;
 };
 
-export default function RegisterScreen({ navigation }) {
+function RegisterScreen({ navigation }) {
+  const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [gender, setGender] = useState('');
   const [weight, setWeight] = useState('');
   const [height, setHeight] = useState('');
-  const [birthDate, setBirthDate] = useState(null);
+  const [birthDate, setBirthDate] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -239,6 +242,12 @@ export default function RegisterScreen({ navigation }) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          <View style={styles.topBar}>
+            <Pressable style={styles.backButton} onPress={() => navigation.goBack()}>
+              <Ionicons name="chevron-back" size={20} color={palette.textPrimary} />
+            </Pressable>
+          </View>
+
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Set your profile once, then focus on the run.</Text>
 
@@ -255,10 +264,25 @@ export default function RegisterScreen({ navigation }) {
             })}
 
             <Text style={styles.label}>Password</Text>
-            {inputWithIcon('lock-closed-outline', 'At least 6 characters', password, setPassword, {
-              autoCapitalize: 'none',
-              secureTextEntry: true,
-            })}
+            <View style={styles.inputWrap}>
+              <Ionicons name="lock-closed-outline" size={18} color={palette.textMuted} />
+              <TextInput
+                placeholder="At least 6 characters"
+                placeholderTextColor={palette.textMuted}
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
+                secureTextEntry={!showPassword}
+              />
+              <Pressable onPress={() => setShowPassword(current => !current)}>
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={palette.textMuted}
+                />
+              </Pressable>
+            </View>
 
             <Text style={styles.label}>Gender</Text>
             <View style={styles.pickerBox}>
@@ -343,6 +367,8 @@ export default function RegisterScreen({ navigation }) {
   );
 }
 
+export default withLegacyRoute(RegisterScreen);
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -356,6 +382,19 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 24,
     gap: 8,
+  },
+  topBar: {
+    marginBottom: 6,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: palette.borderSoft,
+    backgroundColor: 'rgba(13,22,39,0.84)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     ...typography.title,

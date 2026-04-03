@@ -1,24 +1,30 @@
+// @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
   Alert,
+  AppState,
   Platform,
-  Animated,
-  Easing,
+  ScrollView,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { usePathname } from 'expo-router';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 
-import BottomTab from '../components/BottomTab';
+import BottomTab from '../../../components/BottomTab';
+import { withLegacyRoute } from '../../createLegacyRoute';
 
 /* Firebase */
-import { auth, database } from '../../firebaseConfig';
+import { auth, database } from '../../../firebaseConfig';
 import { ref, push, set, get } from 'firebase/database';
 import {
   clearRunTrackingSession,
@@ -26,15 +32,16 @@ import {
   requestRunTrackingPermissions,
   startRunTracking,
   stopRunTracking,
-} from '../../services/runTrackingService';
+} from '../../../services/runTrackingService';
 import {
   gradients,
   palette,
   radii,
   shadows,
   spacing,
+  surfaces,
   typography,
-} from '../../theme/premiumTheme';
+} from '../../../theme/premiumTheme';
 
 /* ---------- Utils ---------- */
 const toNumber = (value, fallback = 0) => {
@@ -96,8 +103,12 @@ const KCAL_PER_KM_PER_KG = 1.036;
 const SESSION_SYNC_MS = 1100;
 
 /* ---------- Screen ---------- */
-export default function RunScreen({ navigation, route }) {
+function RunScreen({ navigation, route }) {
   const uid = route?.params?.uid || auth.currentUser?.uid;
+  const insets = useSafeAreaInsets();
+  const pathname = usePathname();
+  const isFocused = pathname.startsWith('/Run');
+  const { height: windowHeight } = useWindowDimensions();
 
   const [location, setLocation] = useState(null);
   const [coords, setCoords] = useState([]);
@@ -117,11 +128,14 @@ export default function RunScreen({ navigation, route }) {
   const timerRef = useRef(null);
   const syncRef = useRef(null);
   const pedometerSubRef = useRef(null);
+  const previewLocationSubRef = useRef(null);
   const runStartedAtRef = useRef(null);
   const runStartedTimestampRef = useRef(null);
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
-  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const appStateRef = useRef(AppState.currentState);
+  const latestUserPointRef = useRef(null);
+  const hasCenteredOnUserRef = useRef(false);
 
   let mapModule = null;
   if (MAP_ENABLED) {
@@ -148,10 +162,21 @@ export default function RunScreen({ navigation, route }) {
   const cadenceSpm = seconds > 0 ? Math.round((totalSteps / seconds) * 60) : 0;
   const calories = Math.max(0, Math.round(distance * userWeightKg * KCAL_PER_KM_PER_KG));
   const isLiveMode = isRunning && !isBusy;
+  const isSessionExpanded = isRunning || isBusy;
+  const isCompactScreen = windowHeight < 820;
+  const isShortScreen = windowHeight < 740;
+  const preRunMapMinHeight = isShortScreen ? 172 : isCompactScreen ? 196 : 250;
+  const liveMapMinHeight = isShortScreen ? 280 : isCompactScreen ? 320 : 360;
+  const shouldKeepScreenAwake = isFocused && (isRunning || isBusy);
 
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
     pedometerSubRef.current = null;
+  };
+
+  const stopPreviewLocationTracking = () => {
+    previewLocationSubRef.current?.remove();
+    previewLocationSubRef.current = null;
   };
 
   const resetRunState = () => {
@@ -205,36 +230,25 @@ export default function RunScreen({ navigation, route }) {
         clearInterval(syncRef.current);
         syncRef.current = null;
       }
+
+      stopPreviewLocationTracking();
     };
   }, []);
 
   useEffect(() => {
-    if (!isRunning) {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(0);
+    const keepAwakeTag = 'runsy-run-session';
+
+    if (!shouldKeepScreenAwake) {
+      deactivateKeepAwake(keepAwakeTag).catch(() => {});
       return;
     }
 
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 0,
-          duration: 900,
-          easing: Easing.in(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
+    activateKeepAwakeAsync(keepAwakeTag).catch(() => {});
 
-    loop.start();
-    return () => loop.stop();
-  }, [isRunning, pulseAnim]);
+    return () => {
+      deactivateKeepAwake(keepAwakeTag).catch(() => {});
+    };
+  }, [shouldKeepScreenAwake]);
 
   const getElapsedSeconds = () => {
     if (!runStartedAtRef.current) return 0;
@@ -294,9 +308,17 @@ export default function RunScreen({ navigation, route }) {
       if (!mounted || !session?.active) return;
 
       setIsRunning(true);
-      await syncTrackingSessionToUi();
+      const syncedSession = await syncTrackingSessionToUi();
       startTimer();
       await startStepTracking();
+
+      const routeCoords = Array.isArray(syncedSession?.coords) ? syncedSession.coords : [];
+      const currentPoint = syncedSession?.currentPoint || routeCoords[routeCoords.length - 1] || null;
+      if (routeCoords.length > 1) {
+        await fitMapToRoute(routeCoords, currentPoint);
+      } else if (currentPoint) {
+        focusMapOnPoint(currentPoint, 0);
+      }
     };
 
     restoreRunningSession();
@@ -328,8 +350,49 @@ export default function RunScreen({ navigation, route }) {
     };
   }, [isRunning, syncTrackingSessionToUi]);
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      const wasBackground =
+        appStateRef.current === 'background' || appStateRef.current === 'inactive';
+      appStateRef.current = nextState;
+
+      if (wasBackground && nextState === 'active' && isRunning) {
+        (async () => {
+          const session = await syncTrackingSessionToUi();
+          const routeCoords = Array.isArray(session?.coords) ? session.coords : [];
+          const currentPoint = session?.currentPoint || routeCoords[routeCoords.length - 1] || null;
+
+          if (routeCoords.length > 1) {
+            await fitMapToRoute(routeCoords, currentPoint);
+            return;
+          }
+
+          if (currentPoint) {
+            focusMapOnPoint(currentPoint, 450);
+          }
+        })();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [isRunning, syncTrackingSessionToUi]);
+
   const focusMapOnPoint = (point, duration = 600) => {
     if (!mapViewRef.current || !point) return;
+
+    if (typeof mapViewRef.current.animateCamera === 'function') {
+      mapViewRef.current.animateCamera(
+        {
+          center: {
+            latitude: point.latitude,
+            longitude: point.longitude,
+          },
+          zoom: 18,
+        },
+        { duration }
+      );
+      return;
+    }
 
     mapViewRef.current.animateToRegion(
       {
@@ -360,6 +423,113 @@ export default function RunScreen({ navigation, route }) {
     }
   };
 
+  const applyLiveLocation = useCallback((locationUpdate, { focus = false } = {}) => {
+    const latitude = toNumber(locationUpdate?.coords?.latitude, Number.NaN);
+    const longitude = toNumber(locationUpdate?.coords?.longitude, Number.NaN);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return false;
+    }
+
+    const point = { latitude, longitude };
+    latestUserPointRef.current = point;
+    setLocation(point);
+
+    const speedMs = toNumber(locationUpdate?.coords?.speed, Number.NaN);
+    if (Number.isFinite(speedMs) && speedMs > 0) {
+      setInstantSpeedKmh(speedMs * 3.6);
+    }
+
+    if (focus || !hasCenteredOnUserRef.current) {
+      hasCenteredOnUserRef.current = true;
+      focusMapOnPoint(point, focus ? 450 : 0);
+    }
+
+    return true;
+  }, []);
+
+  const handleUserLocationChange = useCallback(event => {
+    applyLiveLocation({ coords: event?.nativeEvent?.coordinate });
+  }, [applyLiveLocation]);
+
+  useEffect(() => {
+    let active = true;
+
+    const startPreviewLocationTracking = async () => {
+      if (!isFocused) return;
+
+      try {
+        const permission = await Location.getForegroundPermissionsAsync();
+        const granted = permission?.status === 'granted' || permission?.granted === true;
+        setHasLocationPermission(granted);
+
+        if (!granted) {
+          stopPreviewLocationTracking();
+          return;
+        }
+
+        stopPreviewLocationTracking();
+        previewLocationSubRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 1000,
+            distanceInterval: 1,
+            mayShowUserSettingsDialog: true,
+          },
+          nextLocation => {
+            if (!active) return;
+            applyLiveLocation(nextLocation);
+          }
+        );
+      } catch (error) {
+        stopPreviewLocationTracking();
+      }
+    };
+
+    startPreviewLocationTracking();
+
+    return () => {
+      active = false;
+      stopPreviewLocationTracking();
+    };
+  }, [applyLiveLocation, isFocused]);
+
+  const locateCurrentPosition = useCallback(
+    async ({ requestPermission = false } = {}) => {
+      try {
+        const permission = requestPermission
+          ? await Location.requestForegroundPermissionsAsync()
+          : await Location.getForegroundPermissionsAsync();
+        const granted = permission?.status === 'granted' || permission?.granted === true;
+
+        setHasLocationPermission(granted);
+
+        if (!granted) {
+          if (requestPermission) {
+            Alert.alert('Location required', 'Please allow location permission');
+          }
+          return false;
+        }
+
+        const current = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+        });
+        await wait(180);
+        return applyLiveLocation(current, { focus: true });
+      } catch (error) {
+        if (requestPermission) {
+          Alert.alert('Error', 'Unable to get current location');
+        }
+        return false;
+      }
+    },
+    [applyLiveLocation]
+  );
+
+  useEffect(() => {
+    locateCurrentPosition();
+  }, [locateCurrentPosition]);
+
   const requestLocationPermission = async () => {
     try {
       const permission = await requestRunTrackingPermissions();
@@ -370,18 +540,10 @@ export default function RunScreen({ navigation, route }) {
         return false;
       }
 
-      if (Platform.OS === 'android' && !permission.backgroundGranted) {
-        Alert.alert(
-          'Background location required',
-          'Please allow "All the time" location permission so tracking keeps running with screen off or other apps.'
-        );
-        return false;
-      }
-
       return true;
     } catch (error) {
       setHasLocationPermission(false);
-      Alert.alert('Error', 'Unable to request location permission');
+      Alert.alert('Error', error?.message || 'Unable to request location permission');
       return false;
     }
   };
@@ -609,10 +771,11 @@ export default function RunScreen({ navigation, route }) {
     distance >= MIN_LIVE_PACE_DISTANCE_KM
       ? formatPace(seconds, distance)
       : '--';
+  const hasRoutePath = coords.length > 1;
   const statusText = isBusy
     ? 'Preparing session...'
     : isRunning
-      ? 'Live + background tracking'
+      ? 'Live tracking active'
       : hasLocationPermission === false
         ? 'Location permission required'
         : 'Ready to run';
@@ -622,85 +785,124 @@ export default function RunScreen({ navigation, route }) {
     : isRunning
       ? 'STOP & SAVE'
       : 'START RUN';
+  const mapPanelTitle = isLiveMode ? 'LIVE ROUTE' : 'ROUTE PREVIEW';
+  const mapPanelStatus = !MAP_ENABLED || !MapView
+    ? 'Map unavailable'
+    : isLiveMode
+      ? hasRoutePath
+        ? `${coords.length} points tracked`
+        : location
+          ? 'Locked to current location'
+          : 'Waiting for first GPS point'
+      : 'Ready when you start';
 
   const mapMessage = !MAP_ENABLED
     ? 'Add EXPO_PUBLIC_GOOGLE_MAPS_API_KEY in .env and rebuild to enable map.'
     : 'react-native-maps is unavailable in this build.';
 
-  const liveDotScale = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.32],
-  });
-  const liveDotOpacity = pulseAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.85, 0.28],
-  });
-
-  return (
-    <SafeAreaView style={styles.container}>
+  const actionButtonNode = (
+    <Pressable
+      style={[
+        styles.actionButton,
+        isBusy && styles.actionButtonDisabled,
+        isLiveMode && styles.actionButtonLive,
+        isSessionExpanded && styles.actionButtonExpanded,
+        !isSessionExpanded && styles.actionButtonDocked,
+      ]}
+      onPress={isRunning ? stopRun : startRun}
+      disabled={isBusy}
+    >
       <LinearGradient
-        colors={isLiveMode ? gradients.successButton : gradients.appBackground}
+        colors={isRunning ? gradients.dangerButton : gradients.accentButton}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.actionButtonGradient}
+      >
+        <Text style={styles.actionText}>{buttonText}</Text>
+      </LinearGradient>
+    </Pressable>
+  );
+
+  const screenContent = (
+    <>
+      {!isSessionExpanded ? (
+        <View style={styles.headerRow}>
+          <Text style={styles.header}>Run Session</Text>
+          <View style={[styles.statusChip, isLiveMode && styles.statusChipLive]}>
+            <Text style={[styles.statusChipText, isLiveMode && styles.statusChipTextLive]}>
+              {statusText}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
+      <LinearGradient
+        colors={gradients.hero}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <View style={[styles.glowA, isLiveMode && styles.glowAlive]} />
-      <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
-
-      <View style={styles.headerRow}>
-        <Text style={styles.header}>Run Session</Text>
-        <View style={[styles.statusChip, isLiveMode && styles.statusChipLive]}>
-          <Text style={[styles.statusChipText, isLiveMode && styles.statusChipTextLive]}>
-            {statusText}
-          </Text>
-        </View>
-      </View>
-
-      <View style={[styles.heroCard, isLiveMode && styles.heroCardLive]}>
-        <View style={styles.heroTopRow}>
-          {isLiveMode ? (
-            <View style={styles.liveBadge}>
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.liveDotPulse,
-                  {
-                    opacity: liveDotOpacity,
-                    transform: [{ scale: liveDotScale }],
-                  },
-                ]}
-              />
-              <View style={styles.liveDotCore} />
-              <Text style={styles.liveBadgeText}>LIVE TRACKING</Text>
-            </View>
-          ) : (
+        style={[
+          styles.heroCard,
+          isLiveMode && styles.heroCardLive,
+          isCompactScreen && styles.heroCardCompact,
+        ]}
+      >
+        {!isLiveMode ? (
+          <View style={styles.heroTopRow}>
             <Text style={styles.preRunHint}>Tap start to begin your run</Text>
-          )}
-          {isLiveMode ? <Text style={styles.heroHint}>Background on</Text> : null}
-        </View>
+          </View>
+        ) : null}
 
-        <Text style={styles.time}>{formatClock(seconds)}</Text>
+        <Text style={[styles.time, isCompactScreen && styles.timeCompact]}>{formatClock(seconds)}</Text>
         <View style={styles.row}>
           <Stat value={distance.toFixed(2)} label="Distance (km)" />
           <Stat value={pace} label="Pace (/km)" />
           <Stat value={formatNumber(displaySpeedKmh, 1)} label="Speed" />
         </View>
+      </LinearGradient>
+
+      <View style={[styles.metricsRow, isCompactScreen && styles.metricsRowCompact]}>
+        <MiniStat
+          label={usingSensorSteps ? 'Steps' : 'Est. Steps'}
+          value={totalSteps.toLocaleString()}
+          icon="walk-outline"
+          tintColor="#34d399"
+          compact={isCompactScreen}
+        />
+        <MiniStat
+          label="Cadence"
+          value={`${cadenceSpm} spm`}
+          icon="timer-outline"
+          tintColor="#38bdf8"
+          compact={isCompactScreen}
+        />
+        <MiniStat
+          label="Calories"
+          value={`${calories} kcal`}
+          icon="flame-outline"
+          tintColor="#fb7185"
+          compact={isCompactScreen}
+        />
+        <MiniStat
+          label="Elev Gain"
+          value={`${Math.round(elevationGainM)} m`}
+          icon="trending-up-outline"
+          tintColor="#f59e0b"
+          compact={isCompactScreen}
+        />
       </View>
 
-      <View style={styles.metricsRow}>
-        <MiniStat label={usingSensorSteps ? 'Steps' : 'Est. Steps'} value={totalSteps.toLocaleString()} />
-        <MiniStat label="Cadence" value={`${cadenceSpm} spm`} />
-        <MiniStat label="Calories" value={`${calories} kcal`} />
-        <MiniStat label="Elev Gain" value={`${Math.round(elevationGainM)} m`} />
-      </View>
-
-      {isLiveMode ? (
-        <Text style={styles.bgTrackingNote}>
-          Tracking keeps running in background. Check the Android notification for live distance.
-        </Text>
-      ) : null}
-
-      <View style={[styles.mapCard, isLiveMode && styles.mapCardLive]} ref={mapCaptureRef} collapsable={false}>
+      <View
+        style={[
+          styles.mapCard,
+          !isSessionExpanded && styles.mapCardStatic,
+          isLiveMode && styles.mapCardLive,
+          isSessionExpanded && styles.mapCardExpanded,
+          !isSessionExpanded && { minHeight: preRunMapMinHeight },
+          isSessionExpanded && { minHeight: liveMapMinHeight },
+        ]}
+        ref={mapCaptureRef}
+        collapsable={false}
+      >
         {MAP_ENABLED && MapView ? (
           <MapView
             ref={mapViewRef}
@@ -709,8 +911,9 @@ export default function RunScreen({ navigation, route }) {
             showsUserLocation={hasLocationPermission === true}
             showsMyLocationButton
             showsCompass
+            onUserLocationChange={handleUserLocationChange}
           >
-            {coords.length > 0 && Marker ? (
+            {hasRoutePath && Marker ? (
               <Marker coordinate={coords[0]} pinColor="#34d399" title="Start" />
             ) : null}
 
@@ -728,31 +931,72 @@ export default function RunScreen({ navigation, route }) {
             <Text style={styles.mapPlaceholderText}>{mapMessage}</Text>
           </View>
         )}
+
+        <View pointerEvents="none" style={styles.mapOverlay}>
+          <LinearGradient
+            colors={['rgba(6,11,20,0.84)', 'rgba(6,11,20,0.34)', 'transparent']}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={styles.mapOverlayFade}
+          />
+          <View style={styles.mapOverlayRow}>
+            <View style={[styles.mapOverlayBadge, isLiveMode && styles.mapOverlayBadgeLive]}>
+              <Text style={styles.mapOverlayBadgeText}>{mapPanelTitle}</Text>
+            </View>
+            <View style={styles.mapOverlayInfo}>
+              <Text style={styles.mapOverlayInfoText}>{mapPanelStatus}</Text>
+            </View>
+          </View>
+        </View>
+
+        <Pressable
+          style={styles.locateButton}
+          onPress={() => locateCurrentPosition({ requestPermission: true })}
+        >
+          <Ionicons name="locate" size={18} color={palette.textPrimary} />
+        </Pressable>
       </View>
 
-      <Pressable
-        style={[
-          styles.actionButton,
-          isBusy && styles.actionButtonDisabled,
-          isLiveMode && styles.actionButtonLive,
-        ]}
-        onPress={isRunning ? stopRun : startRun}
-        disabled={isBusy}
-      >
-        <LinearGradient
-          colors={isRunning ? gradients.dangerButton : gradients.successButton}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.actionButtonGradient}
-        >
-          <Text style={styles.actionText}>{buttonText}</Text>
-        </LinearGradient>
-      </Pressable>
+      <View style={styles.actionButtonInlineWrap}>{actionButtonNode}</View>
+    </>
+  );
 
-      <BottomTab navigation={navigation} uid={uid} active="Run" />
+  return (
+    <SafeAreaView style={[styles.container, isSessionExpanded && styles.containerExpanded]}>
+      <LinearGradient
+        colors={gradients.appBackground}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={[styles.glowA, isLiveMode && styles.glowAlive]} />
+      <View style={[styles.glowB, isLiveMode && styles.glowBLive]} />
+
+      {isSessionExpanded ? (
+        <ScrollView
+          style={styles.mainScroll}
+          contentContainerStyle={[styles.scrollContent, styles.expandedScrollContent, { paddingBottom: Math.max(20, insets.bottom + 18) }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {screenContent}
+        </ScrollView>
+      ) : (
+        <>
+          <ScrollView
+            style={styles.mainScroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {screenContent}
+          </ScrollView>
+          <BottomTab navigation={navigation} uid={uid} active="Run" />
+        </>
+      )}
     </SafeAreaView>
   );
 }
+
+export default withLegacyRoute(RunScreen);
 
 function Stat({ value, label }) {
   return (
@@ -763,11 +1007,16 @@ function Stat({ value, label }) {
   );
 }
 
-function MiniStat({ value, label }) {
+function MiniStat({ value, label, icon, tintColor, compact = false }) {
   return (
-    <View style={styles.miniStatCard}>
-      <Text style={styles.miniStatValue}>{value}</Text>
-      <Text style={styles.miniStatLabel}>{label}</Text>
+    <View style={[styles.miniStatCard, compact && styles.miniStatCardCompact]}>
+      <View style={styles.miniStatTop}>
+        <View style={[styles.miniStatIconWrap, compact && styles.miniStatIconWrapCompact, { backgroundColor: `${tintColor}22` }]}>
+          <Ionicons name={icon} size={16} color={tintColor} />
+        </View>
+        <Text style={[styles.miniStatLabel, compact && styles.miniStatLabelCompact]}>{label}</Text>
+      </View>
+      <Text style={[styles.miniStatValue, compact && styles.miniStatValueCompact]}>{value}</Text>
     </View>
   );
 }
@@ -778,77 +1027,100 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgBase,
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: spacing.screenTop,
-    paddingBottom: 92,
+    paddingBottom: 0,
+  },
+  containerExpanded: {
+    paddingBottom: 16,
+  },
+  scrollContent: {
+    paddingBottom: 20,
+  },
+  expandedContent: {
+    flex: 1,
+  },
+  expandedScrollContent: {
+    flexGrow: 1,
+  },
+  mainScroll: {
+    flex: 1,
+  },
+  actionDock: {
+    position: 'absolute',
+    left: spacing.screenHorizontal,
+    right: spacing.screenHorizontal,
   },
   glowA: {
     position: 'absolute',
     width: 220,
     height: 220,
     borderRadius: 110,
-    backgroundColor: 'rgba(34,197,94,0.18)',
-    top: -60,
+    backgroundColor: 'rgba(34,197,94,0.14)',
+    top: -72,
     right: -40,
   },
   glowAlive: {
-    backgroundColor: 'rgba(34,197,94,0.26)',
-    top: -50,
-    right: -25,
+    backgroundColor: 'rgba(34,197,94,0.18)',
+    top: -68,
+    right: -28,
   },
   glowB: {
     position: 'absolute',
     width: 180,
     height: 180,
     borderRadius: 90,
-    backgroundColor: 'rgba(249,115,22,0.16)',
+    backgroundColor: 'rgba(249,115,22,0.14)',
     bottom: 120,
     left: -50,
   },
   glowBLive: {
-    backgroundColor: 'rgba(14,165,233,0.14)',
-    bottom: 130,
+    backgroundColor: 'rgba(249,115,22,0.16)',
+    bottom: 128,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   header: {
-    ...typography.section,
-    fontSize: 22,
+    ...typography.title,
+    fontSize: 28,
   },
   statusChip: {
-    backgroundColor: 'rgba(15,23,42,0.75)',
+    backgroundColor: 'rgba(13,22,39,0.82)',
     borderWidth: 1,
     borderColor: palette.borderSoft,
     borderRadius: radii.pill,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   statusChipLive: {
-    backgroundColor: 'rgba(22,163,74,0.22)',
-    borderColor: 'rgba(134,239,172,0.55)',
+    backgroundColor: 'rgba(13,22,39,0.88)',
+    borderColor: 'rgba(74,222,128,0.26)',
   },
   statusChipText: {
     color: palette.textSecondary,
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   statusChipTextLive: {
-    color: '#dcfce7',
+    color: palette.textPrimary,
   },
   heroCard: {
-    backgroundColor: 'rgba(15,23,42,0.75)',
     borderRadius: radii.lg,
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: palette.borderSoft,
+    overflow: 'hidden',
     ...shadows.light,
   },
+  heroCardCompact: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
   heroCardLive: {
-    backgroundColor: 'rgba(15,23,42,0.85)',
-    borderColor: 'rgba(74,222,128,0.45)',
+    borderColor: 'rgba(74,222,128,0.3)',
   },
   heroTopRow: {
     flexDirection: 'row',
@@ -857,45 +1129,8 @@ const styles = StyleSheet.create({
     minHeight: 24,
   },
   preRunHint: {
-    color: palette.textMuted,
+    color: palette.textSecondary,
     fontSize: 12,
-  },
-  heroHint: {
-    color: '#bbf7d0',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  liveBadge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    backgroundColor: 'rgba(22,163,74,0.24)',
-    borderWidth: 1,
-    borderColor: 'rgba(134,239,172,0.65)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  liveDotPulse: {
-    position: 'absolute',
-    left: 10,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#86efac',
-  },
-  liveDotCore: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: '#22c55e',
-    marginRight: 6,
-  },
-  liveBadgeText: {
-    color: '#dcfce7',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.45,
   },
   time: {
     color: palette.textPrimary,
@@ -905,6 +1140,10 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
     marginTop: 6,
+  },
+  timeCompact: {
+    fontSize: 40,
+    marginBottom: 6,
   },
   row: {
     flexDirection: 'row',
@@ -928,46 +1167,142 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    marginTop: 12,
+    marginTop: 14,
+    marginBottom: 14,
+    rowGap: 10,
+  },
+  metricsRowCompact: {
+    marginTop: 10,
     marginBottom: 10,
     rowGap: 8,
   },
   miniStatCard: {
-    width: '48.5%',
-    backgroundColor: 'rgba(15,23,42,0.7)',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: palette.borderSoft,
-    paddingVertical: 10,
+    width: '48.6%',
+    minHeight: 88,
+    justifyContent: 'space-between',
+    ...surfaces.card,
+    paddingVertical: 12,
     paddingHorizontal: 12,
+    ...shadows.light,
+  },
+  miniStatCardCompact: {
+    minHeight: 76,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  miniStatTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  miniStatIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginRight: 8,
+  },
+  miniStatIconWrapCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 6,
   },
   miniStatValue: {
     color: palette.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 12,
+  },
+  miniStatValueCompact: {
+    fontSize: 19,
+    marginTop: 10,
   },
   miniStatLabel: {
     color: palette.textMuted,
-    fontSize: 11,
-    marginTop: 2,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+    flex: 1,
   },
-  bgTrackingNote: {
-    color: '#d1fae5',
-    fontSize: 11,
-    marginBottom: 10,
+  miniStatLabelCompact: {
+    fontSize: 9,
   },
   mapCard: {
     flex: 1,
+    minHeight: 250,
     borderRadius: radii.lg,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: palette.borderSoft,
     backgroundColor: palette.bgDeep,
     ...shadows.light,
-    marginBottom: 14,
+    marginBottom: 16,
+  },
+  mapCardStatic: {
+    flex: 0,
+    marginBottom: 0,
   },
   mapCardLive: {
-    borderColor: 'rgba(74,222,128,0.48)',
+    borderColor: 'rgba(74,222,128,0.26)',
+  },
+  mapCardExpanded: {
+    minHeight: 360,
+  },
+  mapOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    padding: 12,
+    zIndex: 1,
+  },
+  mapOverlayFade: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 88,
+  },
+  mapOverlayRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  mapOverlayBadge: {
+    backgroundColor: 'rgba(8,17,32,0.8)',
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+  },
+  mapOverlayBadgeLive: {
+    backgroundColor: 'rgba(8,17,32,0.82)',
+    borderColor: 'rgba(74,222,128,0.26)',
+  },
+  mapOverlayBadgeText: {
+    color: palette.textPrimary,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.75,
+  },
+  mapOverlayInfo: {
+    maxWidth: '58%',
+    backgroundColor: 'rgba(8,17,32,0.72)',
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.16)',
+  },
+  mapOverlayInfoText: {
+    color: palette.textSecondary,
+    fontSize: 10,
+    fontWeight: '600',
   },
   mapPlaceholder: {
     flex: 1,
@@ -985,15 +1320,38 @@ const styles = StyleSheet.create({
     color: palette.textMuted,
     textAlign: 'center',
   },
+  locateButton: {
+    position: 'absolute',
+    right: 14,
+    bottom: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(8,17,32,0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+  },
+  actionButtonInlineWrap: {
+    marginBottom: 4,
+  },
   actionButton: {
     borderRadius: radii.pill,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginTop: 14,
+    marginBottom: 0,
     ...shadows.light,
   },
+  actionButtonDocked: {
+    marginBottom: 0,
+  },
+  actionButtonExpanded: {
+    marginBottom: 0,
+  },
   actionButtonLive: {
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.35,
+    shadowColor: '#ef4444',
+    shadowOpacity: 0.24,
     shadowRadius: 12,
   },
   actionButtonGradient: {
