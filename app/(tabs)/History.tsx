@@ -174,6 +174,7 @@ function HistoryScreen({ navigation, route }) {
         </View>
       ) : (
         <ScrollView
+          style={styles.scroll}
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
         >
@@ -355,7 +356,6 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgBase,
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: spacing.screenTop,
-    paddingBottom: 92,
   },
   header: {
     marginBottom: 12,
@@ -428,9 +428,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  scroll: {
+    flex: 1,
+  },
   content: {
     gap: 10,
-    paddingBottom: 120,
+    paddingBottom: 20,
   },
   emptyCard: {
     ...surfaces.card,

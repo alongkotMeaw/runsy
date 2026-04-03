@@ -128,11 +128,14 @@ function RunScreen({ navigation, route }) {
   const timerRef = useRef(null);
   const syncRef = useRef(null);
   const pedometerSubRef = useRef(null);
+  const previewLocationSubRef = useRef(null);
   const runStartedAtRef = useRef(null);
   const runStartedTimestampRef = useRef(null);
   const mapCaptureRef = useRef(null);
   const mapViewRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const latestUserPointRef = useRef(null);
+  const hasCenteredOnUserRef = useRef(false);
 
   let mapModule = null;
   if (MAP_ENABLED) {
@@ -162,8 +165,6 @@ function RunScreen({ navigation, route }) {
   const isSessionExpanded = isRunning || isBusy;
   const isCompactScreen = windowHeight < 820;
   const isShortScreen = windowHeight < 740;
-  const bottomTabPadding = Math.max(8, insets.bottom + 2);
-  const bottomTabHeight = 64 + bottomTabPadding;
   const preRunMapMinHeight = isShortScreen ? 172 : isCompactScreen ? 196 : 250;
   const liveMapMinHeight = isShortScreen ? 280 : isCompactScreen ? 320 : 360;
   const shouldKeepScreenAwake = isFocused && (isRunning || isBusy);
@@ -171,6 +172,11 @@ function RunScreen({ navigation, route }) {
   const stopStepTracking = () => {
     pedometerSubRef.current?.remove();
     pedometerSubRef.current = null;
+  };
+
+  const stopPreviewLocationTracking = () => {
+    previewLocationSubRef.current?.remove();
+    previewLocationSubRef.current = null;
   };
 
   const resetRunState = () => {
@@ -224,6 +230,8 @@ function RunScreen({ navigation, route }) {
         clearInterval(syncRef.current);
         syncRef.current = null;
       }
+
+      stopPreviewLocationTracking();
     };
   }, []);
 
@@ -372,6 +380,20 @@ function RunScreen({ navigation, route }) {
   const focusMapOnPoint = (point, duration = 600) => {
     if (!mapViewRef.current || !point) return;
 
+    if (typeof mapViewRef.current.animateCamera === 'function') {
+      mapViewRef.current.animateCamera(
+        {
+          center: {
+            latitude: point.latitude,
+            longitude: point.longitude,
+          },
+          zoom: 18,
+        },
+        { duration }
+      );
+      return;
+    }
+
     mapViewRef.current.animateToRegion(
       {
         latitude: point.latitude,
@@ -400,6 +422,113 @@ function RunScreen({ navigation, route }) {
       await wait(300);
     }
   };
+
+  const applyLiveLocation = useCallback((locationUpdate, { focus = false } = {}) => {
+    const latitude = toNumber(locationUpdate?.coords?.latitude, Number.NaN);
+    const longitude = toNumber(locationUpdate?.coords?.longitude, Number.NaN);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return false;
+    }
+
+    const point = { latitude, longitude };
+    latestUserPointRef.current = point;
+    setLocation(point);
+
+    const speedMs = toNumber(locationUpdate?.coords?.speed, Number.NaN);
+    if (Number.isFinite(speedMs) && speedMs > 0) {
+      setInstantSpeedKmh(speedMs * 3.6);
+    }
+
+    if (focus || !hasCenteredOnUserRef.current) {
+      hasCenteredOnUserRef.current = true;
+      focusMapOnPoint(point, focus ? 450 : 0);
+    }
+
+    return true;
+  }, []);
+
+  const handleUserLocationChange = useCallback(event => {
+    applyLiveLocation({ coords: event?.nativeEvent?.coordinate });
+  }, [applyLiveLocation]);
+
+  useEffect(() => {
+    let active = true;
+
+    const startPreviewLocationTracking = async () => {
+      if (!isFocused) return;
+
+      try {
+        const permission = await Location.getForegroundPermissionsAsync();
+        const granted = permission?.status === 'granted' || permission?.granted === true;
+        setHasLocationPermission(granted);
+
+        if (!granted) {
+          stopPreviewLocationTracking();
+          return;
+        }
+
+        stopPreviewLocationTracking();
+        previewLocationSubRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 1000,
+            distanceInterval: 1,
+            mayShowUserSettingsDialog: true,
+          },
+          nextLocation => {
+            if (!active) return;
+            applyLiveLocation(nextLocation);
+          }
+        );
+      } catch (error) {
+        stopPreviewLocationTracking();
+      }
+    };
+
+    startPreviewLocationTracking();
+
+    return () => {
+      active = false;
+      stopPreviewLocationTracking();
+    };
+  }, [applyLiveLocation, isFocused]);
+
+  const locateCurrentPosition = useCallback(
+    async ({ requestPermission = false } = {}) => {
+      try {
+        const permission = requestPermission
+          ? await Location.requestForegroundPermissionsAsync()
+          : await Location.getForegroundPermissionsAsync();
+        const granted = permission?.status === 'granted' || permission?.granted === true;
+
+        setHasLocationPermission(granted);
+
+        if (!granted) {
+          if (requestPermission) {
+            Alert.alert('Location required', 'Please allow location permission');
+          }
+          return false;
+        }
+
+        const current = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+        });
+        await wait(180);
+        return applyLiveLocation(current, { focus: true });
+      } catch (error) {
+        if (requestPermission) {
+          Alert.alert('Error', 'Unable to get current location');
+        }
+        return false;
+      }
+    },
+    [applyLiveLocation]
+  );
+
+  useEffect(() => {
+    locateCurrentPosition();
+  }, [locateCurrentPosition]);
 
   const requestLocationPermission = async () => {
     try {
@@ -642,6 +771,7 @@ function RunScreen({ navigation, route }) {
     distance >= MIN_LIVE_PACE_DISTANCE_KM
       ? formatPace(seconds, distance)
       : '--';
+  const hasRoutePath = coords.length > 1;
   const statusText = isBusy
     ? 'Preparing session...'
     : isRunning
@@ -659,9 +789,11 @@ function RunScreen({ navigation, route }) {
   const mapPanelStatus = !MAP_ENABLED || !MapView
     ? 'Map unavailable'
     : isLiveMode
-      ? coords.length > 1
+      ? hasRoutePath
         ? `${coords.length} points tracked`
-        : 'Waiting for first GPS point'
+        : location
+          ? 'Locked to current location'
+          : 'Waiting for first GPS point'
       : 'Ready when you start';
 
   const mapMessage = !MAP_ENABLED
@@ -779,8 +911,9 @@ function RunScreen({ navigation, route }) {
             showsUserLocation={hasLocationPermission === true}
             showsMyLocationButton
             showsCompass
+            onUserLocationChange={handleUserLocationChange}
           >
-            {coords.length > 0 && Marker ? (
+            {hasRoutePath && Marker ? (
               <Marker coordinate={coords[0]} pinColor="#34d399" title="Start" />
             ) : null}
 
@@ -815,6 +948,13 @@ function RunScreen({ navigation, route }) {
             </View>
           </View>
         </View>
+
+        <Pressable
+          style={styles.locateButton}
+          onPress={() => locateCurrentPosition({ requestPermission: true })}
+        >
+          <Ionicons name="locate" size={18} color={palette.textPrimary} />
+        </Pressable>
       </View>
 
       <View style={styles.actionButtonInlineWrap}>{actionButtonNode}</View>
@@ -834,6 +974,7 @@ function RunScreen({ navigation, route }) {
 
       {isSessionExpanded ? (
         <ScrollView
+          style={styles.mainScroll}
           contentContainerStyle={[styles.scrollContent, styles.expandedScrollContent, { paddingBottom: Math.max(20, insets.bottom + 18) }]}
           showsVerticalScrollIndicator={false}
         >
@@ -842,7 +983,8 @@ function RunScreen({ navigation, route }) {
       ) : (
         <>
           <ScrollView
-            contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomTabHeight + 28 }]}
+            style={styles.mainScroll}
+            contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
           >
             {screenContent}
@@ -891,13 +1033,16 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   scrollContent: {
-    paddingBottom: 16,
+    paddingBottom: 20,
   },
   expandedContent: {
     flex: 1,
   },
   expandedScrollContent: {
     flexGrow: 1,
+  },
+  mainScroll: {
+    flex: 1,
   },
   actionDock: {
     position: 'absolute',
@@ -1174,6 +1319,19 @@ const styles = StyleSheet.create({
   mapPlaceholderText: {
     color: palette.textMuted,
     textAlign: 'center',
+  },
+  locateButton: {
+    position: 'absolute',
+    right: 14,
+    bottom: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(8,17,32,0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
   },
   actionButtonInlineWrap: {
     marginBottom: 4,

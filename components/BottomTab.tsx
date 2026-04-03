@@ -7,6 +7,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth } from '../firebaseConfig';
 import { gradients, palette, radii, shadows } from '../theme/premiumTheme';
 
+export const BOTTOM_TAB_BASE_HEIGHT = 64;
+
+export const getBottomTabPaddingBottom = (insetBottom = 0) =>
+  Math.max(8, insetBottom + 2);
+
+export const getBottomTabOffset = (insetBottom = 0) =>
+  BOTTOM_TAB_BASE_HEIGHT + getBottomTabPaddingBottom(insetBottom);
+
 const tabs = [
   { name: 'Home', icon: 'home', screen: 'Dashboard' },
   { name: 'Run', icon: 'walk', screen: 'Run' },
@@ -23,7 +31,7 @@ export default function BottomTab({ navigation, uid, active }) {
       style={[
         styles.wrapper,
         {
-          paddingBottom: Math.max(8, insets.bottom + 2),
+          paddingBottom: getBottomTabPaddingBottom(insets.bottom),
         },
       ]}
     >
@@ -65,14 +73,13 @@ function TabItem({ name, icon, active, onPress }) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    width: '100%',
+    marginTop: 12,
     paddingHorizontal: 14,
   },
   tabBar: {
     flexDirection: 'row',
+    minHeight: BOTTOM_TAB_BASE_HEIGHT,
     borderRadius: radii.lg,
     borderWidth: 1,
     borderColor: palette.borderSoft,

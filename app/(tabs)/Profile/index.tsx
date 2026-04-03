@@ -745,7 +745,6 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgBase,
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: spacing.screenTop,
-    paddingBottom: 92,
   },
   glowA: {
     position: 'absolute',
@@ -769,7 +768,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
-    paddingBottom: 120,
+    paddingBottom: 20,
   },
   pageHeader: {
     flexDirection: 'row',

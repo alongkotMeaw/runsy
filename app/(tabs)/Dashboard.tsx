@@ -228,6 +228,7 @@ function DashBoard({ route, navigation }) {
       <View style={styles.glowB} />
 
       <ScrollView
+        style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -418,7 +419,6 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bgBase,
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: spacing.screenTop,
-    paddingBottom: 92,
   },
   glowA: {
     position: 'absolute',
@@ -438,8 +438,11 @@ const styles = StyleSheet.create({
     bottom: 140,
     left: -50,
   },
+  scroll: {
+    flex: 1,
+  },
   content: {
-    paddingBottom: 120,
+    paddingBottom: 20,
   },
   header: {
     flexDirection: 'row',
