@@ -7,6 +7,7 @@ node_modules/
 .expo/
 .expo-export-check-android/
 .expo-router-check/
+.eas-inspect-android/
 dist/
 web-build/
 expo-env.d.ts
@@ -36,7 +37,9 @@ build.log
 
 # local env files
 .env
-.env*.local
+.env.*
+!.env.example
+.envrc
 
 # typescript
 *.tsbuildinfo
@@ -49,3 +52,9 @@ build.log
 /apk/
 *.apk
 *.aab
+
+# mobile / cloud secrets
+google-services.json
+GoogleService-Info.plist
+service-account*.json
+*.keystore

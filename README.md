@@ -378,6 +378,7 @@ calories = distanceKm * userWeightKg * 1.036
 - `npm run android` - build/run Android app
 - `npm run ios` - build/run iOS app
 - `npm run web` - run on web
+- `npm run check:secrets` - scan tracked files for high-confidence secrets and sensitive filenames
 
 ## Troubleshooting
 
@@ -388,6 +389,20 @@ If login or register shows a Firebase config error:
 - check `.env`
 - confirm every required `EXPO_PUBLIC_FIREBASE_*` variable exists
 - restart Expo after changing `.env`
+
+### Secret safety before push
+
+Before pushing or sharing the repository:
+
+```bash
+npm run check:secrets
+```
+
+This checks for:
+
+- tracked `.env`-style files
+- tracked mobile credential files
+- high-confidence hardcoded secret patterns inside tracked files
 
 ### Map unavailable
 
@@ -421,4 +436,4 @@ If username login fails:
 
 ## License
 
-This repository does not currently declare a license.
+This project is licensed under the MIT License.
